@@ -1,29 +1,21 @@
 """
-Node 3: 仲裁 Agent。
+仲裁 Agent。
 使用 OpenAI Function Calling 确保输出可解析。
 配合 try/except 兜底，即使结构化解析失败也不会崩溃。
 每次执行 retry_count += 1。
 """
 import json
+import re
 import time
-from pydantic import BaseModel, Field
-from openai import OpenAI
-from state.schema import AgentState
+
+from model.state import AgentState
+from model.schema import ArbiterDecision
+from model.stats import record
+from client import get_client
 from config.settings import (
-    BIG_MODEL_API_KEY, BIG_MODEL_BASE_URL, BIG_MODEL_NAME,
-    ARBITER_MAX_TOKENS, BIG_MODEL_TIMEOUT, logger,
+    BIG_MODEL_NAME, ARBITER_MAX_TOKENS, logger,
 )
-from config.prompts import ARBITER_SYSTEM_PROMPT, ARBITER_USER_PROMPT
-
-
-class ArbiterDecision(BaseModel):
-    """仲裁结构化输出模型。通过 Function Calling 强制 LLM 输出此格式。"""
-    decision: str = Field(
-        description="必须严格输出 'PASS', 'RETRY', 或 'ABORT' 三者之一"
-    )
-    feedback: str = Field(
-        description="综合评审意见及修改指导；若 PASS 则写'无需修改'"
-    )
+from prompts import load
 
 
 # 从 Pydantic 模型生成 OpenAI Function Calling 工具定义
@@ -42,7 +34,6 @@ def _parse_text_response(text: str) -> tuple[str, str]:
     从仲裁模型的纯文本响应中提取 decision 和 feedback。
     兼容 Gemini 等不支持 Function Calling 的模型。
     """
-    import re
     text_upper = text.upper()
 
     # 尝试从 JSON 块中解析
@@ -66,20 +57,14 @@ def arbiter_agent(state: AgentState) -> dict:
     """仲裁节点：综合两份审核意见，输出结构化裁决。"""
     logger.info("[arbiter] 进入仲裁节点")
 
-    client = OpenAI(
-        api_key=BIG_MODEL_API_KEY,
-        base_url=BIG_MODEL_BASE_URL,
-        timeout=BIG_MODEL_TIMEOUT,
-        max_retries=3,
-    )
+    client = get_client()
 
     messages = [
-        {"role": "system", "content": ARBITER_SYSTEM_PROMPT},
-        {"role": "user", "content": ARBITER_USER_PROMPT.format(
+        {"role": "system", "content": load("arbiter", "system_prompt")},
+        {"role": "user", "content": load("arbiter", "user_prompt",
             draft_content=state["draft_content"],
             math_review=state["math_review"],
-            physics_review=state["physics_review"],
-        )},
+            physics_review=state["physics_review"])},
     ]
 
     elapsed = 0.0
@@ -133,9 +118,10 @@ def arbiter_agent(state: AgentState) -> dict:
     new_retry = state.get("retry_count", 0) + 1
     logger.info(f"[arbiter] 裁决={decision} | retry_count 递增至 {new_retry}")
 
-    from utils.run_stats import record
-    record(f"arbiter_r{new_retry}", 0, elapsed, extra=decision,
-           prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=t_tok)
+    record(
+        f"arbiter_r{new_retry}", 0, elapsed, extra=decision,
+        prompt_tokens=p_tok, completion_tokens=c_tok, total_tokens=t_tok,
+    )
 
     return {
         "arbiter_decision": decision,

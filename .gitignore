@@ -1,11 +1,39 @@
-.env
+# Python
 __pycache__/
-*.pyc
-output/
 .pytest_cache/
+*.py[cod]
+*$py.class
 *.egg-info/
 dist/
 build/
+*.egg
+
+# Virtual environments
 .venv/
-TEST_LOG.md
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
 run_log.txt
+TEST_LOG.md
+
+# Output
+output/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv
+uv.lock

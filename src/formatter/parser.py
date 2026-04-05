@@ -1,10 +1,11 @@
 """
-Node 4: 正则隔离器（纯 Python，不调用任何 LLM）。
+正则隔离器（纯 Python，不调用任何 LLM）。
 双重隔离：先提取 Block 公式，再提取 Inline 公式，防止嵌套污染。
 使用 reversed() 从后向前替换，确保前面的 match.start()/end() 不会因替换而偏移。
 """
 import re
-from state.schema import AgentState
+
+from model.state import AgentState
 from config.settings import (
     BLOCK_MATH_PATTERN, BLOCK_PLACEHOLDER_PREFIX, BLOCK_PLACEHOLDER_SUFFIX,
     INLINE_MATH_PATTERN, INLINE_PLACEHOLDER_PREFIX, INLINE_PLACEHOLDER_SUFFIX,
@@ -19,9 +20,7 @@ def _sanitize_block_tags(text: str) -> str:
     - \end{block_math} → </block_math>
     - \begin{block_math} → <block_math>
     """
-    # 修正 \end{block_math} → </block_math>
     text = re.sub(r'\\end\{block_math\}', '</block_math>', text)
-    # 修正 \begin{block_math label="..."} 这种混合写法（极少见但防御性处理）
     text = re.sub(r'\\begin\{block_math\s+label="([^"]+)"\}', r'<block_math label="\1">', text)
     return text
 
@@ -32,9 +31,6 @@ def python_parser(state: AgentState) -> dict:
     Phase 0: 预处理修正 LLM 常见的标签格式错误
     Phase 1: 提取 <block_math> 标签 → 替换为 {{BLOCK_MATH_N}}
     Phase 2: 在已净化的文本中提取 $...$ → 替换为 {{INLINE_MATH_N}}
-
-    替换均使用 reversed() 从后向前进行，
-    这样前面匹配项的 start/end 索引不会因已替换内容的长度变化而失效。
     """
     logger.info("[parser] 进入正则隔离器")
     text = state["draft_content"]

@@ -20,8 +20,8 @@ logging.basicConfig(
 logger = logging.getLogger("PhysicsGenerator")
 
 # ============ 路径配置 ============
-PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
-INPUT_DIR: Path = PROJECT_ROOT / "input"
+# src/config/settings.py → 项目根目录
+PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 OUTPUT_DIR: Path = PROJECT_ROOT / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -37,22 +37,22 @@ def _get_env(key: str) -> str:
         )
     return val
 
-# ============ 大模型配置（命题 / 验算 / 仲裁） ============
-BIG_MODEL_API_KEY: str = _get_env("BIG_MODEL_API_KEY")
-BIG_MODEL_BASE_URL: str = _get_env("BIG_MODEL_BASE_URL")
+# ============ OpenRouter 配置（所有模型经 OpenRouter 网关调用） ============
+OPENROUTER_API_KEY: str = _get_env("OPENROUTER_API_KEY")
+
+# 大模型配置（命题 / 验算 / 仲裁）
 BIG_MODEL_NAME: str = _get_env("BIG_MODEL_NAME")
 BIG_MODEL_TEMPERATURE: float = 0.7       # 命题时允许创造性
 BIG_MODEL_MAX_TOKENS: int = 32768        # thinking model: 思维链+可见输出共享此预算，必须给足
-BIG_MODEL_TIMEOUT: int = 600             # HTTP 超时（秒）：thinking model 可能需要数分钟
 ARBITER_MAX_TOKENS: int = 4096           # 仲裁节点只需输出短裁决，不需大预算
 
-# ============ 小模型配置（格式化排版） ============
-SMALL_MODEL_API_KEY: str = _get_env("SMALL_MODEL_API_KEY")
-SMALL_MODEL_BASE_URL: str = _get_env("SMALL_MODEL_BASE_URL")
+# 小模型配置（格式化排版）
 SMALL_MODEL_NAME: str = _get_env("SMALL_MODEL_NAME")
 SMALL_MODEL_TEMPERATURE: float = 0.0     # 排版零创造性
 SMALL_MODEL_MAX_TOKENS: int = 8192
-SMALL_MODEL_TIMEOUT: int = 300           # 小模型超时（秒）
+
+# 通用超时设置
+MODEL_TIMEOUT: int = 600                 # HTTP 超时（秒）：thinking model 可能需要数分钟
 
 # ============ 流程控制 ============
 MAX_RETRY_COUNT: int = 3                  # 仲裁最大重试轮数（含首次）

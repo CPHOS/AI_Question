@@ -1,9 +1,8 @@
 """
 回填器单元测试。
-覆盖: Block 回填、Inline 回填、混合回填、空字典。
-运行: python -m pytest tests/test_merger.py -v
+运行: uv run pytest tests/test_merger.py -v
 """
-from nodes.merger import python_merger
+from formatter.merger import python_merger
 
 
 def _make_state(**overrides) -> dict:
