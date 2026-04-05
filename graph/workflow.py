@@ -1,5 +1,5 @@
 """
-LangGraph 状态机编排。
+纯 Python 状态机编排（替代 LangGraph）。
 
 流程图:
   START → generator_agent
@@ -28,7 +28,7 @@ LangGraph 状态机编排。
           ▼
          END
 """
-from langgraph.graph import StateGraph, END
+from concurrent.futures import ThreadPoolExecutor
 from state.schema import AgentState
 from nodes.generator import generator_agent
 from nodes.math_verifier import math_verifier
@@ -43,7 +43,7 @@ from config.settings import MAX_RETRY_COUNT, logger
 def _arbiter_router(state: AgentState) -> str:
     """
     仲裁后的条件路由。
-    返回值必须是 add_conditional_edges 映射字典的 key。
+    返回值: "pass" | "retry" | "end"
     优先级: PASS > ABORT > 重试上限 > RETRY
     """
     decision = state.get("arbiter_decision", "RETRY")
@@ -67,50 +67,55 @@ def _arbiter_router(state: AgentState) -> str:
     return "retry"
 
 
-def build_graph():
+class CompiledWorkflow:
     """
-    构建并编译 LangGraph 工作流。
-    返回编译后的 CompiledStateGraph，可直接 .invoke() 调用。
+    编译后的工作流对象，提供与原 LangGraph CompiledStateGraph
+    兼容的 .invoke(state, config=...) 接口。
     """
-    graph = StateGraph(AgentState)
 
-    # ===== 注册所有节点 =====
-    graph.add_node("generator_agent", generator_agent)
-    graph.add_node("math_verifier", math_verifier)
-    graph.add_node("physics_verifier", physics_verifier)
-    graph.add_node("arbiter_agent", arbiter_agent)
-    graph.add_node("python_parser", python_parser)
-    graph.add_node("formatting_agent", formatting_agent)
-    graph.add_node("python_merger", python_merger)
+    def invoke(self, state: AgentState, config: dict | None = None) -> AgentState:
+        """
+        执行完整工作流。
 
-    # ===== 入口 =====
-    graph.set_entry_point("generator_agent")
+        config 参数保留以兼容原有调用方式（如 recursion_limit），
+        但纯 Python 实现中由 MAX_RETRY_COUNT 控制循环上限。
+        """
+        state = dict(state)  # 浅拷贝，避免修改原始输入
 
-    # ===== Fan-out: generator → [math_verifier, physics_verifier] 并行 =====
-    graph.add_edge("generator_agent", "math_verifier")
-    graph.add_edge("generator_agent", "physics_verifier")
+        while True:
+            # ===== 1. 命题节点 =====
+            state.update(generator_agent(state))
 
-    # ===== Fan-in: [math_verifier, physics_verifier] → arbiter =====
-    graph.add_edge("math_verifier", "arbiter_agent")
-    graph.add_edge("physics_verifier", "arbiter_agent")
+            # ===== 2. Fan-out: 并行验算 =====
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                math_future = executor.submit(math_verifier, dict(state))
+                phys_future = executor.submit(physics_verifier, dict(state))
+                state.update(math_future.result())
+                state.update(phys_future.result())
 
-    # ===== 条件路由: arbiter → {pass, retry, end} =====
-    graph.add_conditional_edges(
-        "arbiter_agent",
-        _arbiter_router,
-        {
-            "pass": "python_parser",
-            "retry": "generator_agent",
-            "end": END,
-        },
-    )
+            # ===== 3. Fan-in: 仲裁 =====
+            state.update(arbiter_agent(state))
 
-    # ===== 后处理流水线 =====
-    graph.add_edge("python_parser", "formatting_agent")
-    graph.add_edge("formatting_agent", "python_merger")
-    graph.add_edge("python_merger", END)
+            # ===== 4. 条件路由 =====
+            route = _arbiter_router(state)
 
-    # ===== 编译 =====
-    compiled = graph.compile()
-    logger.info("[workflow] 状态图编译完成")
-    return compiled
+            if route == "pass":
+                # ===== 后处理流水线 =====
+                state.update(python_parser(state))
+                state.update(formatting_agent(state))
+                state.update(python_merger(state))
+                return state
+
+            elif route == "end":
+                return state
+
+            # route == "retry" → 循环继续
+
+
+def build_graph() -> CompiledWorkflow:
+    """
+    构建并返回工作流对象。
+    返回 CompiledWorkflow 实例，可直接 .invoke() 调用。
+    """
+    logger.info("[workflow] 工作流构建完成")
+    return CompiledWorkflow()

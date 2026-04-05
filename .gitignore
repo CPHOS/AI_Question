@@ -8,3 +8,4 @@ dist/
 build/
 .venv/
 TEST_LOG.md
+run_log.txt

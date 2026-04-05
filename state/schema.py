@@ -1,10 +1,10 @@
 """
-LangGraph 全局状态定义。
+全局状态定义。
 使用 TypedDict 确保类型安全。
 
 关于并行节点写冲突说明：
   math_verifier 仅写入 math_review，physics_verifier 仅写入 physics_review。
-  两个并行节点写入不同的 state key，LangGraph 会自动合并，无需定义 reducer。
+  两个并行节点写入不同的 state key，工作流引擎会自动合并，无需定义 reducer。
 """
 from typing import TypedDict
 

@@ -18,7 +18,7 @@ from graph.workflow import build_graph
 from state.schema import AgentState
 from config.settings import logger
 from config.topics import get_random_topic
-from utils.run_stats import get_all as get_run_stats, clear as clear_run_stats
+from utils.run_stats import get_all as get_run_stats, get_total_tokens, clear as clear_run_stats
 from config.settings import (
     BIG_MODEL_NAME, BIG_MODEL_MAX_TOKENS, ARBITER_MAX_TOKENS,
     SMALL_MODEL_NAME, SMALL_MODEL_MAX_TOKENS, PROJECT_ROOT,
@@ -62,9 +62,20 @@ def _append_test_log(
         if key in stats:
             s = stats[key]
             extra = f" ({s['extra']})" if s.get("extra") else ""
-            node_lines.append(f"- {key}: {s['chars']} \u5b57\u7b26 ({s['elapsed']:.0f}s){extra}")
+            tok_info = ""
+            if s.get("total_tokens"):
+                tok_info = f" | tokens: {s['prompt_tokens']}+{s['completion_tokens']}={s['total_tokens']}"
+            node_lines.append(f"- {key}: {s['chars']} \u5b57\u7b26 ({s['elapsed']:.0f}s){tok_info}{extra}")
 
     nodes_text = "\n".join(node_lines) if node_lines else "- \uff08\u65e0\u6570\u636e\uff09"
+
+    # Token 汇总
+    tok = get_total_tokens()
+    token_text = (
+        f"- **Prompt tokens**: {tok['prompt_tokens']}\n"
+        f"- **Completion tokens**: {tok['completion_tokens']}\n"
+        f"- **Total tokens**: {tok['total_tokens']}"
+    )
 
     entry = f"""
 ---
@@ -92,6 +103,9 @@ def _append_test_log(
 - **\u91cd\u8bd5\u6b21\u6570**: {final_state.get('retry_count', 0)}
 - **Block \u516c\u5f0f**: {len(final_state.get('formula_dict', {}))} \u4e2a
 - **Inline \u516c\u5f0f**: {len(final_state.get('inline_dict', {}))} \u4e2a
+
+### Token \u7528\u91cf
+{token_text}
 
 ### \u5907\u6ce8
 
@@ -143,8 +157,8 @@ def main(task_filename: str | None = None) -> None:
         "final_latex": "",
     }
 
-    # ===== Step 3: 构建并运行 LangGraph =====
-    logger.info("构建 LangGraph 状态图...")
+    # ===== Step 3: 构建并运行工作流 =====
+    logger.info("构建工作流状态图...")
     compiled_graph = build_graph()
     clear_run_stats()
 
@@ -154,11 +168,7 @@ def main(task_filename: str | None = None) -> None:
     final_state = initial_state  # fallback
 
     try:
-        # recursion_limit=30: 每轮重试约 5 步 × 最多 3 轮 = 15 步 + 后处理 3 步 = 18 步，留有余量
-        final_state = compiled_graph.invoke(
-            initial_state,
-            config={"recursion_limit": 30},
-        )
+        final_state = compiled_graph.invoke(initial_state)
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
         logger.error(f"图执行异常: {error_msg}")
@@ -190,6 +200,8 @@ def main(task_filename: str | None = None) -> None:
     print(f"   重试次数:   {final_state.get('retry_count', 0)}")
     print(f"   Block 公式: {len(final_state.get('formula_dict', {}))} 个")
     print(f"   Inline公式: {len(final_state.get('inline_dict', {}))} 个")
+    tok = get_total_tokens()
+    print(f"   Token用量:  prompt={tok['prompt_tokens']} + completion={tok['completion_tokens']} = {tok['total_tokens']}")
     print("   输出文件:")
     for name, path in output_paths.items():
         print(f"     [{name}] {path}")

@@ -3,6 +3,7 @@
 测试整个图的路由逻辑：PASS 路径、RETRY 路径、ABORT 路径。
 运行: python -m pytest tests/test_graph.py -v
 """
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 from graph.workflow import build_graph
@@ -21,47 +22,67 @@ def _make_initial_state(**overrides) -> AgentState:
     return base
 
 
+def _make_stream_chunks(text: str):
+    """构造 OpenAI 流式响应的 mock chunk 迭代器。"""
+    chunk = MagicMock()
+    chunk.choices = [MagicMock()]
+    chunk.choices[0].delta.content = text
+    stop = MagicMock()
+    stop.choices = [MagicMock()]
+    stop.choices[0].delta.content = None
+    return iter([chunk, stop])
+
+
+def _make_tool_call_response(decision: str, feedback: str):
+    """构造 OpenAI Function Calling 响应的 mock。"""
+    tool_call = MagicMock()
+    tool_call.function.arguments = json.dumps(
+        {"decision": decision, "feedback": feedback}
+    )
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.tool_calls = [tool_call]
+    return resp
+
+
 class TestGraphRouting:
     """测试条件路由的三条路径。"""
 
-    @patch("nodes.formatter.ChatOpenAI")
-    @patch("nodes.arbiter.ChatOpenAI")
-    @patch("nodes.physics_verifier.ChatOpenAI")
-    @patch("nodes.math_verifier.ChatOpenAI")
-    @patch("nodes.generator.ChatOpenAI")
+    @patch("nodes.formatter.OpenAI")
+    @patch("nodes.arbiter.OpenAI")
+    @patch("nodes.physics_verifier.OpenAI")
+    @patch("nodes.math_verifier.OpenAI")
+    @patch("nodes.generator.OpenAI")
     def test_pass_path(self, mock_gen, mock_math, mock_phys, mock_arb, mock_fmt):
         """PASS 路径: generator → verifiers → arbiter(PASS) → parser → formatter → merger → END"""
-        # Mock generator
-        gen_response = MagicMock()
-        gen_response.content = (
+        # Mock generator (streaming)
+        gen_text = (
             '题干文字\n'
             '<block_math label="eq:1">F = ma</block_math>\n'
             '解答中 $v$ 表示速度。'
         )
-        mock_gen.return_value.invoke.return_value = gen_response
+        mock_gen.return_value.chat.completions.create.return_value = _make_stream_chunks(gen_text)
 
-        # Mock verifiers
-        math_resp = MagicMock()
-        math_resp.content = "【数学审核通过】无数学错误。"
-        mock_math.return_value.invoke.return_value = math_resp
+        # Mock verifiers (streaming)
+        mock_math.return_value.chat.completions.create.return_value = _make_stream_chunks(
+            "【数学审核通过】无数学错误。"
+        )
+        mock_phys.return_value.chat.completions.create.return_value = _make_stream_chunks(
+            "【物理审核通过】无物理错误。"
+        )
 
-        phys_resp = MagicMock()
-        phys_resp.content = "【物理审核通过】无物理错误。"
-        mock_phys.return_value.invoke.return_value = phys_resp
+        # Mock arbiter (function calling, non-streaming)
+        mock_arb.return_value.chat.completions.create.return_value = _make_tool_call_response(
+            "PASS", "无需修改"
+        )
 
-        # Mock arbiter (with_structured_output)
-        arb_resp = MagicMock()
-        arb_resp.decision = "PASS"
-        arb_resp.feedback = "无需修改"
-        mock_arb.return_value.with_structured_output.return_value.invoke.return_value = arb_resp
-
-        # Mock formatter
-        fmt_response = MagicMock()
-        fmt_response.content = "\\section*{题目}\n{{BLOCK_MATH_1}}\n速度 {{INLINE_MATH_1}}"
-        mock_fmt.return_value.invoke.return_value = fmt_response
+        # Mock formatter (streaming)
+        mock_fmt.return_value.chat.completions.create.return_value = _make_stream_chunks(
+            "\\section*{题目}\n{{BLOCK_MATH_1}}\n速度 {{INLINE_MATH_1}}"
+        )
 
         graph = build_graph()
-        result = graph.invoke(_make_initial_state(), config={"recursion_limit": 30})
+        result = graph.invoke(_make_initial_state())
 
         assert result["arbiter_decision"] == "PASS"
         assert result["final_latex"] != ""
