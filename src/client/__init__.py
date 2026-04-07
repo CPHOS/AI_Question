@@ -1,58 +1,49 @@
 """
-OpenRouter 客户端封装层。
-通过 OpenRouter 统一网关调用各大模型（Gemini / GPT / DeepSeek 等）。
+LLM 客户端工厂。
+根据 LLM_PROVIDER 配置自动选择对应实现。
+
+支持的提供商:
+  - openrouter: 通过 OpenRouter 统一网关调用
+  - openai_compatible: 通用 OpenAI 兼容 API（DeepSeek、本地部署等）
 """
-from dataclasses import dataclass
-from openai import OpenAI
-from config.settings import OPENROUTER_API_KEY, MODEL_TIMEOUT
+from client.base import BaseLLMClient, UsageInfo
+
+__all__ = ["get_client", "stream_chat", "UsageInfo", "BaseLLMClient"]
 
 
-_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+def get_client() -> BaseLLMClient:
+    """根据 LLM_PROVIDER 配置创建客户端实例。"""
+    from config.settings import LLM_PROVIDER, MODEL_TIMEOUT
+
+    if LLM_PROVIDER == "openrouter":
+        from config.settings import OPENROUTER_API_KEY
+        if not OPENROUTER_API_KEY:
+            raise ValueError(
+                "使用 openrouter 提供商但 OPENROUTER_API_KEY 未设置。\n"
+                "  修复方法: 在 .env 中设置 OPENROUTER_API_KEY=sk-or-..."
+            )
+        from client.openrouter import OpenRouterClient
+        return OpenRouterClient(api_key=OPENROUTER_API_KEY, timeout=MODEL_TIMEOUT)
+
+    elif LLM_PROVIDER == "openai_compatible":
+        from config.settings import LLM_API_KEY, LLM_BASE_URL
+        if not LLM_API_KEY or not LLM_BASE_URL:
+            raise ValueError(
+                "使用 openai_compatible 提供商但 LLM_API_KEY 或 LLM_BASE_URL 未设置。\n"
+                "  修复方法: 在 .env 中设置 LLM_API_KEY 和 LLM_BASE_URL"
+            )
+        from client.openai_compat import OpenAICompatibleClient
+        return OpenAICompatibleClient(
+            api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=MODEL_TIMEOUT,
+        )
+
+    else:
+        raise ValueError(
+            f"不支持的 LLM 提供商: '{LLM_PROVIDER}'。\n"
+            f"  支持的值: openrouter, openai_compatible"
+        )
 
 
-@dataclass(frozen=True)
-class UsageInfo:
-    """Token 用量信息。"""
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-
-
-def get_client() -> OpenAI:
-    """获取 OpenRouter 客户端实例（所有模型共用）。"""
-    return OpenAI(
-        api_key=OPENROUTER_API_KEY,
-        base_url=_OPENROUTER_BASE_URL,
-        default_headers={
-            "HTTP-Referer": "https://github.com/cphos/AI_Question",
-            "X-Title": "CPhO Physics Generator",
-        },
-        timeout=MODEL_TIMEOUT,
-        max_retries=3,
-    )
-
-
-def stream_chat(client: OpenAI, **kwargs) -> tuple[str, UsageInfo]:
-    """
-    封装流式聊天请求，返回 (完整文本, UsageInfo)。
-    自动设置 stream=True 和 include_usage。
-    kwargs 直接传给 client.chat.completions.create()。
-    """
-    kwargs["stream"] = True
-    kwargs["stream_options"] = {"include_usage": True}
-    response = client.chat.completions.create(**kwargs)
-
-    content = ""
-    usage = None
-    for chunk in response:
-        if chunk.usage:
-            usage = chunk.usage
-        if chunk.choices and chunk.choices[0].delta.content:
-            content += chunk.choices[0].delta.content
-
-    info = UsageInfo(
-        prompt_tokens=usage.prompt_tokens if usage else 0,
-        completion_tokens=usage.completion_tokens if usage else 0,
-        total_tokens=usage.total_tokens if usage else 0,
-    )
-    return content, info
+def stream_chat(client: BaseLLMClient, **kwargs) -> tuple[str, UsageInfo]:
+    """兼容性包装：将独立函数调用代理到客户端实例方法。"""
+    return client.stream_chat(**kwargs)

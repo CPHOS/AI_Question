@@ -13,6 +13,7 @@ def _make_state(**overrides) -> dict:
         "draft_content": "",
         "math_review": "", "physics_review": "",
         "arbiter_decision": "", "arbiter_reason": "", "arbiter_feedback": "",
+        "error_category": "",
         "retry_count": 0, "formula_dict": {}, "inline_dict": {},
         "figure_dict": {},
         "tagged_text": "", "formatted_text": "", "final_latex": "",

@@ -15,17 +15,31 @@ from config.settings import (
 from prompts import load
 
 
+def _score_tier(total_score: int) -> str:
+    """根据总分选择对应的分数段命题规模引导 key。"""
+    if total_score < 40:
+        return "score_guidance_low"
+    elif total_score <= 60:
+        return "score_guidance_mid"
+    else:
+        return "score_guidance_high"
+
+
 def generator_agent(state: AgentState) -> dict:
     """命题节点：调用大模型生成或修改物理竞赛题。"""
     retry = state.get("retry_count", 0)
     logger.info(f"[generator] 进入命题节点 | retry_count={retry}")
 
     client = get_client()
+    total_score = state["total_score"]
+    score_guidance = load("generator", _score_tier(total_score),
+                          total_score=str(total_score))
 
     if retry == 0:
         user_prompt = load("generator", "user_prompt_initial",
                            topic=state["topic"], difficulty=state["difficulty"],
-                           total_score=str(state["total_score"]))
+                           total_score=str(total_score),
+                           score_guidance=score_guidance)
     else:
         user_prompt = load("generator", "user_prompt_retry",
                            arbiter_feedback=state["arbiter_feedback"],
@@ -33,7 +47,7 @@ def generator_agent(state: AgentState) -> dict:
 
     messages = [
         {"role": "system", "content": load("generator", "system_prompt",
-                                           total_score=str(state["total_score"]))},
+                                           total_score=str(total_score))},
         {"role": "user", "content": user_prompt},
     ]
 

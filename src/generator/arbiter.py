@@ -74,7 +74,7 @@ def arbiter_agent(state: AgentState) -> dict:
     try:
         logger.info("[arbiter] 正在等待 thinking model 仲裁...")
         t0 = time.time()
-        resp = client.chat.completions.create(
+        resp = client.create(
             model=BIG_MODEL_NAME,
             messages=messages,
             temperature=0.0,
@@ -99,12 +99,16 @@ def arbiter_agent(state: AgentState) -> dict:
             decision = parsed.decision.strip().upper()
             reason = parsed.reason
             feedback = parsed.feedback
+            error_category = parsed.error_category.strip().lower()
+            if error_category not in ("none", "style", "fatal"):
+                error_category = "fatal"
         else:
             # Fallback: 模型未使用 tool_calls（如 Gemini via OpenRouter），从文本内容解析
             logger.warning("[arbiter] 模型未返回 tool_calls，尝试从文本内容解析")
             raw = msg.content or ""
             decision, feedback = _parse_text_response(raw)
             reason = feedback[:200]
+            error_category = "fatal"
 
         # 校验 decision 是否为合法值
         if decision not in ("PASS", "RETRY", "ABORT"):
@@ -117,6 +121,7 @@ def arbiter_agent(state: AgentState) -> dict:
         decision = "RETRY"
         reason = f"系统错误: {str(e)}"
         feedback = f"[系统错误] 仲裁解析失败，强制重试。异常: {str(e)}"
+        error_category = "fatal"
 
     new_retry = state.get("retry_count", 0) + 1
     logger.info(f"[arbiter] 裁决={decision} | 理由={reason[:80]} | retry_count 递增至 {new_retry}")
@@ -130,5 +135,6 @@ def arbiter_agent(state: AgentState) -> dict:
         "arbiter_decision": decision,
         "arbiter_reason": reason,
         "arbiter_feedback": feedback,
+        "error_category": error_category,
         "retry_count": new_retry,
     }

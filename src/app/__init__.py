@@ -51,6 +51,7 @@ def _write_outputs(task_id: str, final_state: AgentState) -> dict[str, Path]:
         "total_score": final_state.get("total_score", 0),
         "arbiter_decision": final_state.get("arbiter_decision", ""),
         "arbiter_reason": final_state.get("arbiter_reason", ""),
+        "error_category": final_state.get("error_category", ""),
         "arbiter_feedback": final_state.get("arbiter_feedback", ""),
         "retry_count": final_state.get("retry_count", 0),
         "math_review": final_state.get("math_review", ""),
@@ -64,6 +65,39 @@ def _write_outputs(task_id: str, final_state: AgentState) -> dict[str, Path]:
     with open(p, "w", encoding="utf-8") as f:
         json.dump(log_data, f, ensure_ascii=False, indent=2)
     paths["log"] = p
+
+    # ===== 仲裁报告 =====
+    decision = final_state.get("arbiter_decision", "N/A")
+    decision_label = {
+        "PASS": "✅ 通过",
+        "PASS_WITH_EDITS": "⚠️ 有条件通过（仅存在用语规范问题，需人工修订）",
+        "RETRY": "🔄 重试未通过",
+        "ABORT": "❌ 废弃",
+    }.get(decision, decision)
+    report_lines = [
+        f"# 仲裁报告\n\n",
+        f"## 基本信息\n\n",
+        f"| 项目 | 内容 |\n|---|---|\n",
+        f"| 任务 ID | {task_id} |\n",
+        f"| 主题 | {final_state.get('topic', '')} |\n",
+        f"| 难度 | {final_state.get('difficulty', '')} |\n",
+        f"| 总分 | {final_state.get('total_score', 0)} |\n\n",
+        f"## 仲裁结果\n\n",
+        f"- **裁决**: {decision_label}\n",
+        f"- **错误类别**: {final_state.get('error_category', 'N/A')}\n",
+        f"- **理由**: {final_state.get('arbiter_reason', '')}\n",
+        f"- **重试次数**: {final_state.get('retry_count', 0)}\n\n",
+        f"## 数学审核意见\n\n",
+        f"{final_state.get('math_review', '无')}\n\n",
+        f"## 物理审核意见\n\n",
+        f"{final_state.get('physics_review', '无')}\n\n",
+        f"## 仲裁反馈\n\n",
+        f"{final_state.get('arbiter_feedback', '无')}\n",
+    ]
+    p = OUTPUT_DIR / f"{task_id}_report.md"
+    p.write_text("".join(report_lines), encoding="utf-8")
+    paths["report"] = p
+    logger.info(f"[output] 导出仲裁报告: {p.name}")
 
     # ===== 图片绘制需求 =====
     fig_desc = final_state.get("figure_descriptions", {})
@@ -204,6 +238,7 @@ def main(topic: str, difficulty: str = "国家集训队", *,
         "arbiter_decision": "",
         "arbiter_reason": "",
         "arbiter_feedback": "",
+        "error_category": "",
         "retry_count": 0,
         "formula_dict": {},
         "inline_dict": {},
@@ -271,8 +306,8 @@ def _cli() -> None:
                        help="从 JSON 文件加载任务（需含 topic, difficulty 字段）")
     parser.add_argument("--difficulty", type=str, default="国家集训队",
                         help="难度等级（默认: 国家集训队）")
-    parser.add_argument("--score", type=int, default=50,
-                        help="题目总分（45-80，5的倍数，默认: 50）")
+    parser.add_argument("--score", type=int, default=40,
+                        help="题目总分（20-80，默认: 40）")
     parser.add_argument("--log", action="store_true",
                         help="追加运行记录到 TEST_LOG.md")
 

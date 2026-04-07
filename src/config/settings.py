@@ -37,8 +37,15 @@ def _get_env(key: str) -> str:
         )
     return val
 
-# ============ OpenRouter 配置（所有模型经 OpenRouter 网关调用） ============
-OPENROUTER_API_KEY: str = _get_env("OPENROUTER_API_KEY")
+# ============ 服务商配置 ============
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openrouter")
+
+# OpenRouter
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+
+# 通用 OpenAI 兼容（DeepSeek、本地部署等）
+LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
 
 # 大模型配置（命题 / 验算 / 仲裁）
 BIG_MODEL_NAME: str = _get_env("BIG_MODEL_NAME")

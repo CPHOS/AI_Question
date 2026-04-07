@@ -15,3 +15,6 @@ class ArbiterDecision(BaseModel):
     feedback: str = Field(
         description="综合评审意见及修改指导；若 PASS 则写'无需修改'"
     )
+    error_category: str = Field(
+        description="错误类别: 'none'(无错误), 'style'(仅用语规范问题), 'fatal'(数学/物理/逻辑错误)"
+    )

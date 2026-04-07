@@ -11,6 +11,7 @@ def _make_state(**overrides) -> dict:
         "draft_content": "",
         "math_review": "", "physics_review": "",
         "arbiter_decision": "", "arbiter_reason": "", "arbiter_feedback": "",
+        "error_category": "",
         "retry_count": 0, "formula_dict": {}, "inline_dict": {},
         "figure_dict": {},
         "tagged_text": "", "formatted_text": "", "final_latex": "",
@@ -123,6 +124,40 @@ class TestSubqConversion:
         assert "\\subq{1}\\label{q:1}" in result["final_latex"]
         assert "\\subq{2}\\label{q:2}" in result["final_latex"]
 
+    def test_problemstatement_subsubq(self):
+        """二级小问 (1.1)(1.2) → \\subsubq"""
+        state = _make_state(
+            formatted_text=(
+                "\\begin{problemstatement}\n"
+                "题干内容\n\n"
+                "(1) 第一问\n\n"
+                "(1.1) 子问题一\n\n"
+                "(1.2) 子问题二\n"
+                "\\end{problemstatement}\n"
+            ),
+        )
+        result = python_merger(state)
+        assert "\\subq{1}\\label{q:1}" in result["final_latex"]
+        assert "\\subsubq{1.1}\\label{q:1.1}" in result["final_latex"]
+        assert "\\subsubq{1.2}\\label{q:1.2}" in result["final_latex"]
+
+    def test_problemstatement_subsubsubq(self):
+        """三级小问 (1.1.1)(1.1.2) → \\subsubsubq"""
+        state = _make_state(
+            formatted_text=(
+                "\\begin{problemstatement}\n"
+                "题干内容\n\n"
+                "(1) 第一问\n\n"
+                "(1.1) 子问题\n\n"
+                "(1.1.1) 子子问题一\n\n"
+                "(1.1.2) 子子问题二\n"
+                "\\end{problemstatement}\n"
+            ),
+        )
+        result = python_merger(state)
+        assert "\\subsubsubq{1.1.1}\\label{q:1.1.1}" in result["final_latex"]
+        assert "\\subsubsubq{1.1.2}\\label{q:1.1.2}" in result["final_latex"]
+
     def test_solution_solsubq(self):
         state = _make_state(
             formatted_text=(
@@ -137,6 +172,41 @@ class TestSubqConversion:
         result = python_merger(state)
         assert "\\solsubq{1}{15}" in result["final_latex"]
         assert "\\solsubq{2}{25}" in result["final_latex"]
+
+    def test_solution_solsubsubq(self):
+        """二级解答 (1.1)[X分] → \\solsubsubq"""
+        state = _make_state(
+            formatted_text=(
+                "\\begin{solution}\n"
+                "(1)[30分]\n"
+                "(1.1)[15分]\n"
+                "解答\n\n"
+                "(1.2)[15分]\n"
+                "解答\n"
+                "\\end{solution}\n"
+            ),
+        )
+        result = python_merger(state)
+        assert "\\solsubq{1}{30}" in result["final_latex"]
+        assert "\\solsubsubq{1.1}{15}" in result["final_latex"]
+        assert "\\solsubsubq{1.2}{15}" in result["final_latex"]
+
+    def test_solution_solsubsubsubq(self):
+        """三级解答 (1.1.1)[X分] → \\solsubsubsubq"""
+        state = _make_state(
+            formatted_text=(
+                "\\begin{solution}\n"
+                "(1)[20分]\n"
+                "(1.1)[10分]\n"
+                "解答\n\n"
+                "(1.2)[10分]\n"
+                "解答\n"
+                "\\end{solution}\n"
+            ),
+        )
+        result = python_merger(state)
+        assert "\\solsubsubq{1.1}{10}" in result["final_latex"]
+        assert "\\solsubsubq{1.2}{10}" in result["final_latex"]
 
 
 class TestScoringAndTotal:
@@ -160,3 +230,21 @@ class TestScoringAndTotal:
         )
         result = python_merger(state)
         assert "\\begin{problem}[40]" in result["final_latex"]
+
+    def test_total_score_multilevel(self):
+        """多层级时只累加一级小问分值"""
+        state = _make_state(
+            formatted_text=(
+                "\\begin{problem}{}\n"
+                "\\begin{solution}\n"
+                "(1)[20分]\n"
+                "(1.1)[10分]\n解答\n"
+                "(1.2)[10分]\n解答\n"
+                "(2)[30分]\n解答\n"
+                "\\end{solution}\n"
+                "\\end{problem}\n"
+            ),
+        )
+        result = python_merger(state)
+        # 总分 = 20 + 30 = 50（不重复累加 1.1/1.2 的 10+10）
+        assert "\\begin{problem}[50]" in result["final_latex"]

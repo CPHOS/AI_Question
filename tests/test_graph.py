@@ -19,6 +19,7 @@ def _make_initial_state(**overrides) -> AgentState:
         "total_score": 50, "title": "",
         "draft_content": "", "math_review": "", "physics_review": "",
         "arbiter_decision": "", "arbiter_reason": "", "arbiter_feedback": "",
+        "error_category": "",
         "retry_count": 0,
         "formula_dict": {}, "inline_dict": {}, "figure_dict": {},
         "tagged_text": "", "formatted_text": "", "final_latex": "",
@@ -28,11 +29,13 @@ def _make_initial_state(**overrides) -> AgentState:
     return base
 
 
-def _make_tool_call_response(decision: str, feedback: str, reason: str = ""):
+def _make_tool_call_response(decision: str, feedback: str, reason: str = "",
+                             error_category: str = "none"):
     """构造 OpenAI Function Calling 响应的 mock。"""
     tool_call = MagicMock()
     tool_call.function.arguments = json.dumps(
-        {"decision": decision, "reason": reason or feedback, "feedback": feedback}
+        {"decision": decision, "reason": reason or feedback,
+         "feedback": feedback, "error_category": error_category}
     )
     resp = MagicMock()
     resp.choices = [MagicMock()]
@@ -68,7 +71,7 @@ class TestGraphRouting:
         mock_math_chat.return_value = ("【数学审核通过】无数学错误。", _ZERO_USAGE)
         mock_phys_chat.return_value = ("【物理审核通过】无物理错误。", _ZERO_USAGE)
 
-        mock_arb_client.return_value.chat.completions.create.return_value = _make_tool_call_response(
+        mock_arb_client.return_value.create.return_value = _make_tool_call_response(
             "PASS", "无需修改"
         )
 

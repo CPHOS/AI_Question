@@ -12,7 +12,7 @@ from typing import TypedDict
 class AgentState(TypedDict):
     topic: str                 # 输入：物理主题
     difficulty: str            # 输入：难度等级
-    total_score: int           # 输入：题目总分（45-80，5 的倍数）
+    total_score: int           # 输入：题目总分（20-80，默认 40）
     title: str                 # 命题 Agent 自拟的题目标题
     draft_content: str         # 命题 Agent 生成的完整题目与解答
     math_review: str           # 数学验算 Agent 的审核意见
@@ -20,6 +20,7 @@ class AgentState(TypedDict):
     arbiter_decision: str      # 仲裁结果: "PASS" | "RETRY" | "ABORT"
     arbiter_feedback: str      # 仲裁给出的修改建议
     arbiter_reason: str        # 仲裁做出判决的理由摘要
+    error_category: str        # 错误类别: "none" | "style" | "fatal"
     retry_count: int           # 当前重试次数（0 = 首次生成）
     formula_dict: dict         # Block 公式字典: {"{{BLOCK_MATH_1}}": {"label": "...", "content": "...", "score": "..."}}
     inline_dict: dict          # Inline 公式字典: {"{{INLINE_MATH_1}}": "..."}
