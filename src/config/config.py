@@ -1,6 +1,6 @@
 """
 全局配置中心。
-所有常量、路径、模型参数、正则表达式、日志配置均集中于此。
+基于 .env 文件进行配置管理，所有可调参数均通过环境变量读取。
 禁止在其他文件中出现硬编码的魔术字符串或路径。
 """
 import os
@@ -20,9 +20,8 @@ logging.basicConfig(
 logger = logging.getLogger("PhysicsGenerator")
 
 # ============ 路径配置 ============
-# src/config/settings.py → 项目根目录
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
-OUTPUT_DIR: Path = PROJECT_ROOT / "output"
+OUTPUT_DIR: Path = Path(os.getenv("OUTPUT_DIR", str(PROJECT_ROOT / "output")))
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # ============ 环境变量安全读取 ============
@@ -49,20 +48,20 @@ LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
 
 # 大模型配置（命题 / 验算 / 仲裁）
 BIG_MODEL_NAME: str = _get_env("BIG_MODEL_NAME")
-BIG_MODEL_TEMPERATURE: float = 0.7       # 命题时允许创造性
-BIG_MODEL_MAX_TOKENS: int = 32768        # thinking model: 思维链+可见输出共享此预算，必须给足
-ARBITER_MAX_TOKENS: int = 4096           # 仲裁节点只需输出短裁决，不需大预算
+BIG_MODEL_TEMPERATURE: float = float(os.getenv("BIG_MODEL_TEMPERATURE", "0.7"))
+BIG_MODEL_MAX_TOKENS: int = int(os.getenv("BIG_MODEL_MAX_TOKENS", "32768"))
+ARBITER_MAX_TOKENS: int = int(os.getenv("ARBITER_MAX_TOKENS", "4096"))
 
 # 小模型配置（格式化排版）
 SMALL_MODEL_NAME: str = _get_env("SMALL_MODEL_NAME")
-SMALL_MODEL_TEMPERATURE: float = 0.0     # 排版零创造性
-SMALL_MODEL_MAX_TOKENS: int = 8192
+SMALL_MODEL_TEMPERATURE: float = float(os.getenv("SMALL_MODEL_TEMPERATURE", "0.0"))
+SMALL_MODEL_MAX_TOKENS: int = int(os.getenv("SMALL_MODEL_MAX_TOKENS", "8192"))
 
 # 通用超时设置
-MODEL_TIMEOUT: int = 600                 # HTTP 超时（秒）：thinking model 可能需要数分钟
+MODEL_TIMEOUT: int = int(os.getenv("MODEL_TIMEOUT", "600"))
 
 # ============ 流程控制 ============
-MAX_RETRY_COUNT: int = 3                  # 仲裁最大重试轮数（含首次）
+MAX_RETRY_COUNT: int = int(os.getenv("MAX_RETRY_COUNT", "3"))
 
 # ============ 占位符前后缀 ============
 BLOCK_PLACEHOLDER_PREFIX: str = "{{BLOCK_MATH_"

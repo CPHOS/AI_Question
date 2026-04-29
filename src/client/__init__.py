@@ -1,47 +1,57 @@
 """
 LLM 客户端工厂。
-根据 LLM_PROVIDER 配置自动选择对应实现。
+基于注册中心 (`client.base.register_provider`) 实现，新增服务商无需改动本文件。
 
-支持的提供商:
+支持的提供商（默认注册）:
   - openrouter: 通过 OpenRouter 统一网关调用
   - openai_compatible: 通用 OpenAI 兼容 API（DeepSeek、本地部署等）
-"""
-from client.base import BaseLLMClient, UsageInfo
 
-__all__ = ["get_client", "stream_chat", "UsageInfo", "BaseLLMClient"]
+新增 Provider 示例:
+    from client.base import BaseLLMClient, register_provider
+
+    @register_provider("my_provider")
+    class MyProviderClient(BaseLLMClient):
+        @classmethod
+        def from_config(cls):
+            ...
+        def stream_chat(self, **kw): ...
+        def create(self, **kw): ...
+
+    # 在 .env 设置 LLM_PROVIDER=my_provider 后，get_client() 会自动选中。
+"""
+from client.base import (
+    BaseLLMClient,
+    UsageInfo,
+    register_provider,
+    get_provider_class,
+    supported_providers,
+)
+
+# 触发默认 Provider 自注册（@register_provider 在 import 时生效）。
+# 注意：openrouter 模块会自动 import openai_compat 作为父类，所以引入顺序无影响。
+import client.openai_compat  # noqa: F401  -- side-effect: register openai_compatible
+import client.openrouter     # noqa: F401  -- side-effect: register openrouter
+
+
+__all__ = [
+    "get_client",
+    "stream_chat",
+    "UsageInfo",
+    "BaseLLMClient",
+    "register_provider",
+    "supported_providers",
+]
 
 
 def get_client() -> BaseLLMClient:
-    """根据 LLM_PROVIDER 配置创建客户端实例。"""
-    from config.settings import LLM_PROVIDER, MODEL_TIMEOUT
+    """根据 LLM_PROVIDER 配置创建客户端实例。
 
-    if LLM_PROVIDER == "openrouter":
-        from config.settings import OPENROUTER_API_KEY
-        if not OPENROUTER_API_KEY:
-            raise ValueError(
-                "使用 openrouter 提供商但 OPENROUTER_API_KEY 未设置。\n"
-                "  修复方法: 在 .env 中设置 OPENROUTER_API_KEY=sk-or-..."
-            )
-        from client.openrouter import OpenRouterClient
-        return OpenRouterClient(api_key=OPENROUTER_API_KEY, timeout=MODEL_TIMEOUT)
+    通过注册中心查找并委托给 provider 自己的 `from_config()`。
+    """
+    from config.config import LLM_PROVIDER
 
-    elif LLM_PROVIDER == "openai_compatible":
-        from config.settings import LLM_API_KEY, LLM_BASE_URL
-        if not LLM_API_KEY or not LLM_BASE_URL:
-            raise ValueError(
-                "使用 openai_compatible 提供商但 LLM_API_KEY 或 LLM_BASE_URL 未设置。\n"
-                "  修复方法: 在 .env 中设置 LLM_API_KEY 和 LLM_BASE_URL"
-            )
-        from client.openai_compat import OpenAICompatibleClient
-        return OpenAICompatibleClient(
-            api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=MODEL_TIMEOUT,
-        )
-
-    else:
-        raise ValueError(
-            f"不支持的 LLM 提供商: '{LLM_PROVIDER}'。\n"
-            f"  支持的值: openrouter, openai_compatible"
-        )
+    cls = get_provider_class(LLM_PROVIDER)
+    return cls.from_config()
 
 
 def stream_chat(client: BaseLLMClient, **kwargs) -> tuple[str, UsageInfo]:

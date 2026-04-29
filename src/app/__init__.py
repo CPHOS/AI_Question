@@ -5,26 +5,30 @@
     uv run physics-generator --topic "刚体力学"
     uv run physics-generator --topic "电磁感应" --difficulty "省级竞赛"
     uv run physics-generator --input task.json
+    uv run physics-generator --adapt source.txt
+    uv run physics-generator --adapt source.txt --mode idea_expansion
 """
-import sys
+# 注：本系统不集成任何外部审题工具（如 ai-reviewer CLI）。
+# 所有审核（数学 / 物理 / 结构 / 仲裁）均在状态机内由本仓库的 Agent 完成。
 import json
 import uuid
 import time
 import argparse
 from pathlib import Path
 
-from graph.workflow import build_graph
-from model.state import AgentState
+from engine.state_machine import build_graph
+from spec.normalizer import from_cli, from_json
+from model.state import WorkflowData
 from model.stats import get_all as get_run_stats, get_total_tokens, clear as clear_run_stats
-from config.settings import (
+from config.config import (
     logger, BIG_MODEL_NAME, BIG_MODEL_MAX_TOKENS, ARBITER_MAX_TOKENS,
-    SMALL_MODEL_NAME, SMALL_MODEL_MAX_TOKENS, PROJECT_ROOT, OUTPUT_DIR,
+    PROJECT_ROOT, OUTPUT_DIR,
 )
 
 
 # ============ 输出写入 ============
 
-def _write_outputs(task_id: str, final_state: AgentState) -> dict[str, Path]:
+def _write_outputs(task_id: str, final_state: WorkflowData) -> dict[str, Path]:
     """将 final_state 的关键内容写入 output/ 目录。"""
     paths: dict[str, Path] = {}
 
@@ -48,14 +52,20 @@ def _write_outputs(task_id: str, final_state: AgentState) -> dict[str, Path]:
         "task_id": task_id,
         "topic": final_state.get("topic", ""),
         "difficulty": final_state.get("difficulty", ""),
+        "mode": final_state.get("mode", "topic_generation"),
+        "source_material": final_state.get("source_material", "")[:200],
         "total_score": final_state.get("total_score", 0),
         "arbiter_decision": final_state.get("arbiter_decision", ""),
         "arbiter_reason": final_state.get("arbiter_reason", ""),
         "error_category": final_state.get("error_category", ""),
         "arbiter_feedback": final_state.get("arbiter_feedback", ""),
         "retry_count": final_state.get("retry_count", 0),
+        "problem_retry_count": final_state.get("problem_retry_count", 0),
+        "solution_retry_count": final_state.get("solution_retry_count", 0),
         "math_review": final_state.get("math_review", ""),
         "physics_review": final_state.get("physics_review", ""),
+        "structure_review": final_state.get("structure_review", ""),
+        "template_report": final_state.get("template_report", ""),
         "block_formula_count": len(final_state.get("formula_dict", {})),
         "inline_formula_count": len(final_state.get("inline_dict", {})),
         "figure_count": len(final_state.get("figure_descriptions", {})),
@@ -71,7 +81,8 @@ def _write_outputs(task_id: str, final_state: AgentState) -> dict[str, Path]:
     decision_label = {
         "PASS": "✅ 通过",
         "PASS_WITH_EDITS": "⚠️ 有条件通过（仅存在用语规范问题，需人工修订）",
-        "RETRY": "🔄 重试未通过",
+        "RETRY_PROBLEM": "🔄 重试未通过（题干问题）",
+        "RETRY_SOLUTION": "🔄 重试未通过（解答问题）",
         "ABORT": "❌ 废弃",
     }.get(decision, decision)
     report_lines = [
@@ -86,11 +97,14 @@ def _write_outputs(task_id: str, final_state: AgentState) -> dict[str, Path]:
         f"- **裁决**: {decision_label}\n",
         f"- **错误类别**: {final_state.get('error_category', 'N/A')}\n",
         f"- **理由**: {final_state.get('arbiter_reason', '')}\n",
-        f"- **重试次数**: {final_state.get('retry_count', 0)}\n\n",
+        f"- **重试次数**: {final_state.get('retry_count', 0)} "
+        f"(命题 {final_state.get('problem_retry_count', 0)} / 解题 {final_state.get('solution_retry_count', 0)})\n\n",
         f"## 数学审核意见\n\n",
         f"{final_state.get('math_review', '无')}\n\n",
         f"## 物理审核意见\n\n",
         f"{final_state.get('physics_review', '无')}\n\n",
+        f"## 结构审核意见\n\n",
+        f"{final_state.get('structure_review', '无')}\n\n",
         f"## 仲裁反馈\n\n",
         f"{final_state.get('arbiter_feedback', '无')}\n",
     ]
@@ -140,18 +154,34 @@ def _append_test_log(
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     status = "❌ 失败" if error_msg else "✅ 成功"
 
+    # 动态遍历：按前缀分组，保证分阶段计数 / 多轮仲裁下的全部统计都能显示。
+    def _sorted_keys(prefix: str) -> list[str]:
+        import re as _re
+        def _suffix_num(k: str) -> int:
+            m = _re.search(r'(\d+)$', k)
+            return int(m.group(1)) if m else 0
+        return sorted([k for k in stats if k.startswith(prefix)], key=_suffix_num)
+
+    ordered_keys: list[str] = []
+    ordered_keys += _sorted_keys("planner")
+    ordered_keys += _sorted_keys("problem_gen_r")
+    ordered_keys += _sorted_keys("solution_gen_r")
+    for k in ("math_check", "physics_check"):
+        if k in stats:
+            ordered_keys.append(k)
+    ordered_keys += _sorted_keys("arbiter_r")
+    for k in ("formatter", "template_agent"):
+        if k in stats:
+            ordered_keys.append(k)
+
     node_lines = []
-    for key in ["generator_r0", "generator_r1", "generator_r2",
-                 "math_verifier", "physics_verifier",
-                 "arbiter_r1", "arbiter_r2", "arbiter_r3",
-                 "formatter"]:
-        if key in stats:
-            s = stats[key]
-            extra = f" ({s['extra']})" if s.get("extra") else ""
-            tok_info = ""
-            if s.get("total_tokens"):
-                tok_info = f" | tokens: {s['prompt_tokens']}+{s['completion_tokens']}={s['total_tokens']}"
-            node_lines.append(f"- {key}: {s['chars']} 字符 ({s['elapsed']:.0f}s){tok_info}{extra}")
+    for key in ordered_keys:
+        s = stats[key]
+        extra = f" ({s['extra']})" if s.get("extra") else ""
+        tok_info = ""
+        if s.get("total_tokens"):
+            tok_info = f" | tokens: {s['prompt_tokens']}+{s['completion_tokens']}={s['total_tokens']}"
+        node_lines.append(f"- {key}: {s['chars']} 字符 ({s['elapsed']:.0f}s){tok_info}{extra}")
 
     nodes_text = "\n".join(node_lines) if node_lines else "- （无数据）"
     tok = get_total_tokens()
@@ -201,55 +231,58 @@ def _append_test_log(
     logger.info(f"[TEST_LOG] Run #{run_num} 已追加到 {log_path}")
 
 
-# ============ 输入加载 ============
+# ============ 控制台摘要 ============
 
-def _load_input_json(filepath: str) -> dict:
-    """从 JSON 文件加载任务。"""
-    p = Path(filepath)
-    if not p.exists():
-        raise FileNotFoundError(f"任务文件未找到: {p}")
-    with open(p, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    for field in ("topic", "difficulty"):
-        if field not in data:
-            raise KeyError(f"JSON 缺少必填字段: '{field}'，文件: {p}")
-    return data
+def _print_summary(
+    task_id: str,
+    final_state: WorkflowData,
+    output_paths: dict[str, Path],
+    error_msg: str = "",
+) -> None:
+    """统一的结束摘要，供 --topic / --adapt / --input 三条路径共用。"""
+    print(f"\n{'='*60}")
+    print("任务执行完成" if not error_msg else "任务执行失败")
+    print(f"   任务 ID:   {task_id}")
+    if error_msg:
+        print(f"   失败原因:   {error_msg}")
+    print(f"   最终裁决:   {final_state.get('arbiter_decision', 'N/A')}")
+    print(
+        f"   重试次数:   {final_state.get('retry_count', 0)} "
+        f"(命题 {final_state.get('problem_retry_count', 0)} / 解题 {final_state.get('solution_retry_count', 0)})"
+    )
+    print(f"   Block 公式: {len(final_state.get('formula_dict', {}))} 个")
+    print(f"   Inline公式: {len(final_state.get('inline_dict', {}))} 个")
+    tok = get_total_tokens()
+    print(f"   Token用量:  prompt={tok['prompt_tokens']} + completion={tok['completion_tokens']} = {tok['total_tokens']}")
+    if output_paths:
+        print("   输出文件:")
+        for name, path in output_paths.items():
+            print(f"     [{name}] {path}")
+    print(f"{'='*60}")
 
 
 # ============ 主函数 ============
 
 def main(topic: str, difficulty: str = "国家集训队", *,
-         total_score: int = 50, write_log: bool = False) -> None:
-    """主函数：构建图 → 执行 → 写出"""
+         total_score: int = 40, write_log: bool = False,
+         source_file: str | None = None,
+         mode: str | None = None) -> None:
+    """主函数：构建状态机 → 执行 → 写出"""
 
     task_id = f"task_{uuid.uuid4().hex[:8]}"
     logger.info(f"{'='*60}")
     logger.info(f"系统启动 | topic={topic[:60]} | difficulty={difficulty} | total_score={total_score} | task_id={task_id}")
     logger.info(f"{'='*60}")
 
-    initial_state: AgentState = {
-        "topic": topic,
-        "difficulty": difficulty,
-        "total_score": total_score,
-        "title": "",
-        "draft_content": "",
-        "math_review": "",
-        "physics_review": "",
-        "arbiter_decision": "",
-        "arbiter_reason": "",
-        "arbiter_feedback": "",
-        "error_category": "",
-        "retry_count": 0,
-        "formula_dict": {},
-        "inline_dict": {},
-        "tagged_text": "",
-        "formatted_text": "",
-        "final_latex": "",
-        "figure_dict": {},
-        "figure_descriptions": {},
-    }
+    initial_state = from_cli(
+        topic=topic,
+        difficulty=difficulty,
+        total_score=total_score,
+        source_file=source_file,
+        mode=mode,
+    )
 
-    logger.info("构建工作流状态图...")
+    logger.info("构建工作流状态机...")
     compiled_graph = build_graph()
     clear_run_stats()
 
@@ -259,14 +292,14 @@ def main(topic: str, difficulty: str = "国家集训队", *,
     final_state = initial_state
 
     try:
-        final_state = compiled_graph.invoke(initial_state)
+        final_state = compiled_graph.run(initial_state)
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
-        logger.error(f"图执行异常: {error_msg}")
+        logger.error(f"执行异常: {error_msg}")
 
     total_elapsed = time.time() - t_start
 
-    output_paths = {}
+    output_paths: dict[str, Path] = {}
     if not error_msg:
         logger.info("推理完成，导出产物...")
         output_paths = _write_outputs(task_id, final_state)
@@ -279,19 +312,7 @@ def main(topic: str, difficulty: str = "国家集训队", *,
             final_state=final_state, error_msg=error_msg,
         )
 
-    print(f"\n{'='*60}")
-    print("任务执行完成")
-    print(f"   任务 ID:   {task_id}")
-    print(f"   最终裁决:   {final_state.get('arbiter_decision', 'N/A')}")
-    print(f"   重试次数:   {final_state.get('retry_count', 0)}")
-    print(f"   Block 公式: {len(final_state.get('formula_dict', {}))} 个")
-    print(f"   Inline公式: {len(final_state.get('inline_dict', {}))} 个")
-    tok = get_total_tokens()
-    print(f"   Token用量:  prompt={tok['prompt_tokens']} + completion={tok['completion_tokens']} = {tok['total_tokens']}")
-    print("   输出文件:")
-    for name, path in output_paths.items():
-        print(f"     [{name}] {path}")
-    print(f"{'='*60}")
+    _print_summary(task_id, final_state, output_paths, error_msg)
 
 
 def _cli() -> None:
@@ -303,27 +324,65 @@ def _cli() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--topic", type=str, help="物理主题（直接指定）")
     group.add_argument("--input", type=str, metavar="FILE",
-                       help="从 JSON 文件加载任务（需含 topic, difficulty 字段）")
+                       help="从 JSON 文件加载任务（需含 topic 或 source_material 字段）")
+    group.add_argument("--adapt", type=str, metavar="FILE",
+                       help="基于已有材料改编（文件路径）")
     parser.add_argument("--difficulty", type=str, default="国家集训队",
                         help="难度等级（默认: 国家集训队）")
     parser.add_argument("--score", type=int, default=40,
                         help="题目总分（20-80，默认: 40）")
+    parser.add_argument("--mode", type=str, default=None,
+                        choices=["topic_generation", "literature_adaptation",
+                                 "idea_expansion", "problem_enrichment"],
+                        help="命题模式（默认自动推断）")
     parser.add_argument("--log", action="store_true",
                         help="追加运行记录到 TEST_LOG.md")
 
     args = parser.parse_args()
 
     if args.input:
-        data = _load_input_json(args.input)
-        topic = data["topic"]
-        difficulty = data.get("difficulty", args.difficulty)
-        total_score = data.get("total_score", args.score)
-    else:
-        topic = args.topic
-        difficulty = args.difficulty
-        total_score = args.score
+        data = from_json(args.input)
+        compiled_graph = build_graph()
+        clear_run_stats()
+        task_id = f"task_{uuid.uuid4().hex[:8]}"
+        logger.info(f"{'='*60}")
+        logger.info(
+            "系统启动 | input=%s | topic=%s | task_id=%s",
+            args.input, data.get("topic", "")[:60], task_id,
+        )
+        logger.info(f"{'='*60}")
 
-    main(topic, difficulty, total_score=total_score, write_log=args.log)
+        t_start = time.time()
+        error_msg = ""
+        final_state = data
+        try:
+            final_state = compiled_graph.run(data)
+        except Exception as e:
+            error_msg = f"{type(e).__name__}: {e}"
+            logger.error("执行异常: %s", error_msg)
+        total_elapsed = time.time() - t_start
+
+        output_paths: dict[str, Path] = {}
+        if not error_msg:
+            logger.info("推理完成，导出产物...")
+            output_paths = _write_outputs(task_id, final_state)
+
+        if args.log:
+            _append_test_log(
+                topic=data.get("topic", ""), difficulty=data.get("difficulty", ""),
+                model=BIG_MODEL_NAME, max_tokens=BIG_MODEL_MAX_TOKENS,
+                total_elapsed=total_elapsed,
+                final_state=final_state, error_msg=error_msg,
+            )
+
+        _print_summary(task_id, final_state, output_paths, error_msg)
+    elif args.adapt:
+        topic = Path(args.adapt).stem
+        main(topic, args.difficulty, total_score=args.score,
+             write_log=args.log, source_file=args.adapt, mode=args.mode)
+    else:
+        main(args.topic, args.difficulty, total_score=args.score,
+             write_log=args.log, mode=args.mode)
 
 
 if __name__ == "__main__":

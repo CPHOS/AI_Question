@@ -2,7 +2,7 @@
 回填器单元测试。
 运行: uv run pytest tests/test_merger.py -v
 """
-from formatter.merger import python_merger
+from latex.merge import merge as python_merger
 
 
 def _make_state(**overrides) -> dict:

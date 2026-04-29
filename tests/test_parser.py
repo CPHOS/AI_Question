@@ -3,7 +3,7 @@
 运行: uv run pytest tests/test_parser.py -v
 """
 import pytest
-from formatter.parser import python_parser
+from latex.isolate import isolate as python_parser
 
 
 def _make_state(**overrides) -> dict:
