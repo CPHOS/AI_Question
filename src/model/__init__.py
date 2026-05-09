@@ -2,10 +2,14 @@
 from model.state import (
     WorkflowData,
     TaskInput,
+    PlanningOutput,
     GenerationOutput,
+    GenerationPatch,
     ReviewOutput,
+    ReviewPatch,
     ArbitrationOutput,
     LaTeXOutput,
+    LaTeXPatch,
 )
 from model.schema import (
     ArbiterDecision,
@@ -20,10 +24,14 @@ __all__ = [
     "WorkflowData",
     # 各阶段记录
     "TaskInput",
+    "PlanningOutput",
     "GenerationOutput",
+    "GenerationPatch",
     "ReviewOutput",
+    "ReviewPatch",
     "ArbitrationOutput",
     "LaTeXOutput",
+    "LaTeXPatch",
     # 结构化模型
     "ArbiterDecision",
     "TemplateFixReport",

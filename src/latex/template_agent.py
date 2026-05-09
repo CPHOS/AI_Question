@@ -10,7 +10,7 @@ LaTeX 模板检查与调整。
 """
 import re
 
-from model.state import WorkflowData, LaTeXOutput
+from model.state import WorkflowData, LaTeXPatch
 from config.config import logger
 
 
@@ -73,7 +73,7 @@ def _auto_fix(latex: str, issues: list[str]) -> tuple[str, list[str]]:
     return latex, fixes
 
 
-def fix_template(data: WorkflowData) -> LaTeXOutput:
+def fix_template(data: WorkflowData) -> LaTeXPatch:
     """
     模板修正节点：
     1. 规则检查

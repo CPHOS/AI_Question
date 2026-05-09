@@ -372,6 +372,7 @@ AI_Question/
 | `SMALL_MODEL_TEMPERATURE` | 小模型温度 | `0.0` |
 | `SMALL_MODEL_MAX_TOKENS` | 小模型最大 token 数 | `8192` |
 | `MODEL_TIMEOUT` | HTTP 超时（秒） | `600` |
+| `LLM_MAX_RETRIES` | LLM SDK 请求最大重试次数 | `3` |
 | `MAX_RETRY_COUNT` | 单阶段最大重试轮数 | `3` |
 | `OUTPUT_DIR` | 输出目录 | `output` |
 

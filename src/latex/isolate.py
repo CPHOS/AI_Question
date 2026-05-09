@@ -10,7 +10,7 @@
 """
 import re
 
-from model.state import WorkflowData, LaTeXOutput
+from model.state import WorkflowData, LaTeXPatch
 from config.config import (
     BLOCK_MATH_PATTERN, BLOCK_PLACEHOLDER_PREFIX, BLOCK_PLACEHOLDER_SUFFIX,
     INLINE_MATH_PATTERN, INLINE_PLACEHOLDER_PREFIX, INLINE_PLACEHOLDER_SUFFIX,
@@ -31,7 +31,7 @@ def _sanitize_block_tags(text: str) -> str:
     return text
 
 
-def isolate(data: WorkflowData) -> LaTeXOutput:
+def isolate(data: WorkflowData) -> LaTeXPatch:
     """
     正则隔离器：
     Phase 0: 预处理修正 LLM 常见的标签格式错误

@@ -17,19 +17,19 @@ class OpenAICompatibleClient(BaseLLMClient):
     provider_name = "openai_compatible"
 
     def __init__(self, api_key: str, base_url: str,
-                 timeout: int = 600, **client_kwargs):
+                 timeout: int = 600, max_retries: int = 3, **client_kwargs):
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
-            max_retries=3,
+            max_retries=max_retries,
             **client_kwargs,
         )
 
     @classmethod
     def from_config(cls) -> "OpenAICompatibleClient":
         """从 .env 配置构造（LLM_API_KEY + LLM_BASE_URL）。"""
-        from config.config import LLM_API_KEY, LLM_BASE_URL, MODEL_TIMEOUT
+        from config.config import LLM_API_KEY, LLM_BASE_URL, MODEL_TIMEOUT, LLM_MAX_RETRIES
 
         if not LLM_API_KEY or not LLM_BASE_URL:
             raise ValueError(
@@ -40,6 +40,7 @@ class OpenAICompatibleClient(BaseLLMClient):
             api_key=LLM_API_KEY,
             base_url=LLM_BASE_URL,
             timeout=MODEL_TIMEOUT,
+            max_retries=LLM_MAX_RETRIES,
         )
 
     def stream_chat(self, **kwargs) -> tuple[str, UsageInfo]:

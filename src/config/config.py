@@ -59,6 +59,7 @@ SMALL_MODEL_MAX_TOKENS: int = int(os.getenv("SMALL_MODEL_MAX_TOKENS", "8192"))
 
 # 通用超时设置
 MODEL_TIMEOUT: int = int(os.getenv("MODEL_TIMEOUT", "600"))
+LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
 # ============ 流程控制 ============
 MAX_RETRY_COUNT: int = int(os.getenv("MAX_RETRY_COUNT", "3"))

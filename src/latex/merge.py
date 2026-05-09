@@ -8,11 +8,11 @@
 """
 import re
 
-from model.state import WorkflowData, LaTeXOutput
+from model.state import WorkflowData, LaTeXPatch
 from config.config import logger
 
 
-def merge(data: WorkflowData) -> LaTeXOutput:
+def merge(data: WorkflowData) -> LaTeXPatch:
     """
     回填器（CPHOS 模板对齐）：
     1. 按文档顺序收集占位符，建立 label → 公式编号映射

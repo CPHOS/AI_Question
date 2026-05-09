@@ -10,7 +10,7 @@
 import re
 import time
 
-from model.state import WorkflowData, LaTeXOutput
+from model.state import WorkflowData, LaTeXPatch
 from model.stats import record
 from client import get_client, stream_chat
 from config.config import (
@@ -89,7 +89,7 @@ def _wrap_fallback_latex(tagged_text: str, *, title: str = "") -> str:
     return result
 
 
-def formatting_agent(data: WorkflowData) -> LaTeXOutput:
+def formatting_agent(data: WorkflowData) -> LaTeXPatch:
     """
     格式化节点：
     1. 发送给小模型排版

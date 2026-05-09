@@ -12,7 +12,7 @@
 import re
 import time
 
-from model.state import WorkflowData, GenerationOutput, ReviewOutput
+from model.state import WorkflowData
 from model.stats import record
 from client import get_client, stream_chat
 from config.config import (
@@ -137,6 +137,7 @@ def problem_generator_agent(data: WorkflowData) -> dict:
     return {
         "title": title,
         "problem_text": content,
+        "solution_text": "",
         # 清空上轮审核（本轮审核结果尚未产出）
         "math_review": "",
         "physics_review": "",
