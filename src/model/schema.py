@@ -6,7 +6,7 @@
 """
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # 公共枚举（其他模块可直接 import 复用，避免硬编码字符串）
@@ -32,6 +32,20 @@ class ArbiterDecision(BaseModel):
     error_category: ErrorCategoryLiteral = Field(
         description="错误类别: 'none'(无错误), 'style'(仅用语规范问题), 'fatal'(数学/物理/逻辑错误)"
     )
+
+    @model_validator(mode="after")
+    def validate_decision_category(self) -> "ArbiterDecision":
+        """校验 decision 与 error_category 的合法组合。"""
+        if self.decision == "PASS":
+            if self.error_category not in ("none", "style"):
+                raise ValueError("decision=PASS 时 error_category 只能是 none 或 style")
+            return self
+
+        if self.error_category != "fatal":
+            raise ValueError(
+                f"decision={self.decision} 时 error_category 必须是 fatal"
+            )
+        return self
 
 
 class TemplateFixReport(BaseModel):

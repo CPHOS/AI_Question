@@ -12,7 +12,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from model.state import WorkflowData, ReviewOutput
+from model.state import WorkflowData, ReviewOutput, ReviewPatch
 from model.stats import record
 from client import get_client, stream_chat
 from config.config import BIG_MODEL_NAME, BIG_MODEL_MAX_TOKENS, logger
@@ -23,7 +23,7 @@ from prompts import load
 # 数学检查
 # ------------------------------------------------------------------
 
-def _math_check(data: WorkflowData) -> ReviewOutput:
+def _math_check(data: WorkflowData) -> ReviewPatch:
     """数学检查：验证解答中所有数学推导的正确性。"""
     logger.info("[math_check] 进入数学检查节点")
     client = get_client()
@@ -55,7 +55,7 @@ def _math_check(data: WorkflowData) -> ReviewOutput:
 # 物理检查
 # ------------------------------------------------------------------
 
-def _physics_check(data: WorkflowData) -> ReviewOutput:
+def _physics_check(data: WorkflowData) -> ReviewPatch:
     """物理检查：验证题目的物理正确性、量纲一致性和模型自洽性。"""
     logger.info("[physics_check] 进入物理检查节点")
     client = get_client()
@@ -87,7 +87,7 @@ def _physics_check(data: WorkflowData) -> ReviewOutput:
 # 结构检查（纯规则，不调用 LLM）
 # ------------------------------------------------------------------
 
-def _structure_check(data: WorkflowData) -> ReviewOutput:
+def _structure_check(data: WorkflowData) -> ReviewPatch:
     """结构检查：验证小问编号、分值一致性和标签完整性。"""
     logger.info("[structure_check] 进入结构检查节点")
     issues: list[str] = []
@@ -151,7 +151,11 @@ def run_reviews(data: WorkflowData) -> ReviewOutput:
         phys_future = executor.submit(_physics_check, dict(data))
         struct_future = executor.submit(_structure_check, dict(data))
 
-        result: ReviewOutput = {}
+        result: ReviewOutput = {
+            "math_review": "",
+            "physics_review": "",
+            "structure_review": "",
+        }
         result.update(math_future.result())
         result.update(phys_future.result())
         result.update(struct_future.result())

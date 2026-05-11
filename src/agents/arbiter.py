@@ -16,7 +16,6 @@
     error_category / *_retry_count）
 """
 import json
-import re
 import time
 
 from pydantic import ValidationError
@@ -31,9 +30,6 @@ from config.config import (
 from prompts import load
 
 
-_VALID_DECISIONS = ("PASS", "RETRY_PROBLEM", "RETRY_SOLUTION", "ABORT")
-_VALID_ERROR_CATEGORIES = ("none", "style", "fatal")
-
 # 从 Pydantic 模型生成 OpenAI Function Calling 工具定义
 _ARBITER_TOOLS = [{
     "type": "function",
@@ -45,31 +41,73 @@ _ARBITER_TOOLS = [{
 }]
 
 
-def _parse_text_response(text: str) -> tuple[str, str]:
-    """
-    从仲裁模型的纯文本响应中提取 decision 和 feedback。
-    兼容 Gemini 等不支持 Function Calling 的模型。
-    """
-    text_upper = text.upper()
-
-    # 尝试从 JSON 块中解析
-    json_match = re.search(
-        r'\{[^{}]*"decision"\s*:\s*"(PASS|RETRY_PROBLEM|RETRY_SOLUTION|ABORT)"[^{}]*\}',
-        text, re.IGNORECASE,
+def _call_arbiter_model(client, messages: list[dict[str, str]], *, label: str):
+    """调用仲裁模型并返回响应、耗时和 token 统计。"""
+    logger.info("[arbiter] 正在等待 thinking model 仲裁 (%s)...", label)
+    t0 = time.time()
+    resp = client.create(
+        model=BIG_MODEL_NAME,
+        messages=messages,
+        temperature=0.0,
+        max_tokens=ARBITER_MAX_TOKENS,
+        tools=_ARBITER_TOOLS,
+        tool_choice={"type": "function", "function": {"name": "arbiter_decision"}},
     )
-    if json_match:
-        try:
-            parsed = json.loads(json_match.group(0))
-            return parsed.get("decision", "RETRY_PROBLEM").strip().upper(), parsed.get("feedback", text)
-        except json.JSONDecodeError:
-            pass
+    elapsed = time.time() - t0
+    usage = resp.usage
+    p_tok = usage.prompt_tokens if usage else 0
+    c_tok = usage.completion_tokens if usage else 0
+    t_tok = usage.total_tokens if usage else 0
+    logger.info(
+        "[arbiter] 响应到达 (%s) | %.0fs | tokens: %d+%d=%d",
+        label, elapsed, p_tok, c_tok, t_tok,
+    )
+    return resp, elapsed, p_tok, c_tok, t_tok
 
-    # 关键词匹配（按优先级排序，先匹配更具体的）
-    for keyword in ("RETRY_PROBLEM", "RETRY_SOLUTION", "PASS", "ABORT"):
-        if keyword in text_upper:
-            return keyword, text
 
-    return "RETRY_PROBLEM", f"[系统] 无法从文本中提取裁决，强制重试命题。原文: {text[:500]}"
+def _parse_tool_decision(resp) -> tuple[ArbiterDecision | None, object, Exception | None]:
+    """从 tool_calls 中解析仲裁结果；解析失败时返回原始载荷与异常。"""
+    msg = resp.choices[0].message
+    if not msg.tool_calls:
+        return None, None, ValueError("模型未返回 arbiter_decision 工具调用")
+
+    raw_args = msg.tool_calls[0].function.arguments
+    try:
+        payload = json.loads(raw_args)
+        return ArbiterDecision(**payload), payload, None
+    except (json.JSONDecodeError, ValidationError, ValueError, TypeError) as exc:
+        return None, raw_args, exc
+
+
+def _error_summary(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        return json.dumps(exc.errors(include_url=False), ensure_ascii=False, default=str)
+    return str(exc)
+
+
+def _build_relabel_messages(
+    messages: list[dict[str, str]],
+    bad_payload: object,
+    exc: Exception,
+) -> list[dict[str, str]]:
+    payload_text = (
+        json.dumps(bad_payload, ensure_ascii=False)
+        if isinstance(bad_payload, dict)
+        else str(bad_payload)
+    )
+    return messages + [{
+        "role": "user",
+        "content": (
+            "你上一次返回的 arbiter_decision 工具调用字段非法，"
+            "请只重新调用 arbiter_decision 工具，不要重新审题，不要输出正文。\n"
+            f"非法载荷：{payload_text}\n"
+            f"校验错误：{_error_summary(exc)}\n"
+            "合法 decision 只能是 PASS / RETRY_PROBLEM / RETRY_SOLUTION / ABORT。\n"
+            "合法 error_category 只能是 none / style / fatal。\n"
+            "合法组合为：PASS+none/style，RETRY_PROBLEM+fatal，"
+            "RETRY_SOLUTION+fatal，ABORT+fatal。"
+        ),
+    }]
 
 
 def arbiter_agent(data: WorkflowData) -> ArbitrationOutput:
@@ -95,89 +133,48 @@ def arbiter_agent(data: WorkflowData) -> ArbitrationOutput:
     p_tok = c_tok = t_tok = 0
 
     try:
-        logger.info("[arbiter] 正在等待 thinking model 仲裁...")
-        t0 = time.time()
-        resp = client.create(
-            model=BIG_MODEL_NAME,
-            messages=messages,
-            temperature=0.0,
-            max_tokens=ARBITER_MAX_TOKENS,
-            tools=_ARBITER_TOOLS,
-            tool_choice={"type": "function", "function": {"name": "arbiter_decision"}},
+        resp, elapsed, p_tok, c_tok, t_tok = _call_arbiter_model(
+            client, messages, label="initial"
         )
-        elapsed = time.time() - t0
-        usage = resp.usage
-        p_tok = usage.prompt_tokens if usage else 0
-        c_tok = usage.completion_tokens if usage else 0
-        t_tok = usage.total_tokens if usage else 0
-        logger.info("[arbiter] 响应到达 | %.0fs | tokens: %d+%d=%d", elapsed, p_tok, c_tok, t_tok)
+        parsed, bad_payload, parse_error = _parse_tool_decision(resp)
 
-        msg = resp.choices[0].message
+        if parse_error is not None:
+            logger.warning(
+                "[arbiter] tool_calls 字段非法，要求仲裁重新打标签 | %s",
+                _error_summary(parse_error),
+            )
+            repair_messages = _build_relabel_messages(messages, bad_payload, parse_error)
+            repair_resp, repair_elapsed, repair_p, repair_c, repair_t = _call_arbiter_model(
+                client, repair_messages, label="relabel"
+            )
+            elapsed += repair_elapsed
+            p_tok += repair_p
+            c_tok += repair_c
+            t_tok += repair_t
+            parsed, bad_payload, parse_error = _parse_tool_decision(repair_resp)
 
-        # 优先从 tool_calls 解析
-        if msg.tool_calls:
-            raw_args = msg.tool_calls[0].function.arguments
-            result = json.loads(raw_args)
-
-            # 兼容旧版 "RETRY" → "RETRY_PROBLEM"。Pydantic Literal 校验会拒绝 "RETRY"，
-            # 所以必须在解析前做这步映射；命中时打 INFO 日志，便于观察该兼容分支
-            # 是否仍被新模型触发（若长期为零可考虑彻底移除）。
-            if result.get("decision", "").strip().upper() == "RETRY":
-                logger.info("[arbiter] 收到旧值 decision='RETRY'，自动映射为 RETRY_PROBLEM")
-                result["decision"] = "RETRY_PROBLEM"
-
-            try:
-                parsed = ArbiterDecision(**result)
-            except ValidationError as ve:
-                # Pydantic Literal 校验失败：明确告知哪个字段非法，再走结构化降级。
-                bad_decision = result.get("decision")
-                bad_category = result.get("error_category")
-                logger.warning(
-                    "[arbiter] tool_calls 字段非法 (decision=%r, error_category=%r) → 走文本兜底 | %s",
-                    bad_decision, bad_category, ve.errors(include_url=False)[:3],
-                )
-                raw = msg.content or json.dumps(result, ensure_ascii=False)
-                decision, feedback = _parse_text_response(raw)
-                reason = feedback[:200]
-                # 文本兜底无法可靠判定 error_category：fatal 是保守选择，但必须显式记录。
-                error_category = "fatal"
-                logger.warning(
-                    "[arbiter] 文本兜底无法判定 error_category，按保守策略置为 'fatal'"
-                )
-            else:
-                decision = parsed.decision  # 已被 Literal 收敛
-                reason = parsed.reason
-                feedback = parsed.feedback
-                error_category = parsed.error_category  # 已被 Literal 收敛
+        if parse_error is not None or parsed is None:
+            logger.error(
+                "[arbiter] 重新打标签仍失败，终止本题 | payload=%r | error=%s",
+                bad_payload, _error_summary(parse_error or ValueError("empty result")),
+            )
+            decision = "ABORT"
+            reason = "仲裁模型返回的结构化标签非法，重新打标签后仍无法通过校验。"
+            feedback = (
+                "[系统] 仲裁结构化标签非法，流程终止。请检查仲裁提示词或模型工具调用支持。"
+            )
+            error_category = "fatal"
         else:
-            # Fallback: 从文本内容解析
-            logger.warning("[arbiter] 模型未返回 tool_calls，尝试从文本解析")
-            raw = msg.content or ""
-            decision, feedback = _parse_text_response(raw)
-            reason = feedback[:200]
-            # 文本兜底没有结构化 error_category 信号：fatal 是保守默认，必须显式记录。
-            error_category = "fatal"
-            logger.warning(
-                "[arbiter] 文本兜底无法判定 error_category，按保守策略置为 'fatal'"
-            )
-
-        # 二次防御：经过 Pydantic 后值理论上必合法，仍校验一次以防 _parse_text_response 输出
-        if decision not in _VALID_DECISIONS:
-            raw_decision = decision
-            logger.warning("[arbiter] 非法 decision: '%s'，强制视为 RETRY_PROBLEM", raw_decision)
-            decision = "RETRY_PROBLEM"
-            feedback = f"[系统] 仲裁返回非法值'{raw_decision}'，强制重试。原始反馈: {feedback}"
-        if error_category not in _VALID_ERROR_CATEGORIES:
-            logger.warning(
-                "[arbiter] 非法 error_category: '%s'，强制视为 'fatal'", error_category
-            )
-            error_category = "fatal"
+            decision = parsed.decision
+            reason = parsed.reason
+            feedback = parsed.feedback
+            error_category = parsed.error_category
 
     except Exception as e:
-        logger.error("[arbiter] 结构化解析失败: %s，触发兜底 RETRY_PROBLEM", e)
-        decision = "RETRY_PROBLEM"
+        logger.error("[arbiter] 仲裁执行失败: %s，终止本题", e)
+        decision = "ABORT"
         reason = f"系统错误: {str(e)}"
-        feedback = f"[系统错误] 仲裁解析失败，强制重试。异常: {str(e)}"
+        feedback = f"[系统错误] 仲裁执行失败，流程终止。异常: {str(e)}"
         error_category = "fatal"
 
     # ===== 分阶段重试计数 =====

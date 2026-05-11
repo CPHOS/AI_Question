@@ -166,4 +166,38 @@ def _spec_to_workflow_data(spec: TaskSpec) -> WorkflowData:
     data.update(initial_review)
     data.update(initial_arbitration)
     data.update(initial_latex)
+    required_keys = (
+        "mode",
+        "topic",
+        "source_material",
+        "difficulty",
+        "total_score",
+        "difficulty_profile",
+        "planning_notes",
+        "title",
+        "problem_text",
+        "solution_text",
+        "draft_content",
+        "math_review",
+        "physics_review",
+        "structure_review",
+        "arbiter_decision",
+        "arbiter_feedback",
+        "arbiter_reason",
+        "error_category",
+        "retry_count",
+        "problem_retry_count",
+        "solution_retry_count",
+        "formula_dict",
+        "inline_dict",
+        "figure_dict",
+        "tagged_text",
+        "formatted_text",
+        "final_latex",
+        "template_report",
+        "figure_descriptions",
+    )
+    missing = [key for key in required_keys if key not in data]
+    if missing:
+        raise AssertionError(f"WorkflowData 初始化缺少关键字段: {missing}")
     return data

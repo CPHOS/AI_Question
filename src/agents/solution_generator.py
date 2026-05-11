@@ -10,7 +10,7 @@
 import re
 import time
 
-from model.state import WorkflowData, GenerationOutput
+from model.state import WorkflowData, GenerationPatch
 from model.stats import record
 from client import get_client, stream_chat
 from config.config import (
@@ -19,7 +19,7 @@ from config.config import (
 from prompts import load
 
 
-def solution_generator_agent(data: WorkflowData) -> GenerationOutput:
+def solution_generator_agent(data: WorkflowData) -> GenerationPatch:
     """解题生成节点：根据题干生成参考答案和评分点。
 
     retry 语义：`solution_retry_count` 由仲裁 Agent 在返回 `RETRY_SOLUTION` 时 +1。

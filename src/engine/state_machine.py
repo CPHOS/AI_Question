@@ -93,7 +93,28 @@ class GenerationStateMachine:
             total_retry, 2 * MAX_RETRY_COUNT,
         )
 
+        if decision not in _VALID_DECISIONS:
+            logger.warning("[router] 未识别 decision=%r，强制终止", decision)
+            return "end"
+
+        invalid_combo = (
+            (decision == "PASS" and error_cat not in ("none", "style"))
+            or (
+                decision in ("RETRY_PROBLEM", "RETRY_SOLUTION", "ABORT")
+                and error_cat != "fatal"
+            )
+        )
+        if invalid_combo:
+            logger.warning(
+                "[router] decision/error_category 组合非法: decision=%s error_category=%s，强制终止",
+                decision, error_cat,
+            )
+            return "end"
+
         if decision == "PASS":
+            if error_cat == "style":
+                logger.info("[router] → pass_with_edits（仅有用语规范问题）")
+                return "pass_with_edits"
             logger.info("[router] → pass（进入后处理流水线）")
             return "pass"
 
@@ -115,13 +136,6 @@ class GenerationStateMachine:
                 else "total_exhausted" if total_exhausted and not stage_exhausted
                 else "stage+total_exhausted"
             )
-            if error_cat == "style":
-                logger.info(
-                    "[router] → pass_with_edits（达上限 [%s] 但 error_category=style，按"
-                    "有条件通过处理）",
-                    cap_reason,
-                )
-                return "pass_with_edits"
             logger.warning(
                 "[router] → end（达上限 [%s]，error_category=%s，强制终止）",
                 cap_reason, error_cat,
@@ -132,11 +146,6 @@ class GenerationStateMachine:
             logger.info("[router] → retry_solution（回到解题生成）")
             return "retry_solution"
 
-        # RETRY_PROBLEM；未识别值理论上已在仲裁 Agent 内被收敛到 RETRY_PROBLEM
-        if decision != "RETRY_PROBLEM":
-            logger.warning(
-                "[router] 未识别 decision=%r，按 RETRY_PROBLEM 兜底", decision,
-            )
         logger.info("[router] → retry_problem（回到命题生成）")
         return "retry_problem"
 

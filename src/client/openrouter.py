@@ -16,11 +16,12 @@ class OpenRouterClient(OpenAICompatibleClient):
 
     _BASE_URL = "https://openrouter.ai/api/v1"
 
-    def __init__(self, api_key: str, timeout: int = 600):
+    def __init__(self, api_key: str, timeout: int = 600, max_retries: int = 3):
         super().__init__(
             api_key=api_key,
             base_url=self._BASE_URL,
             timeout=timeout,
+            max_retries=max_retries,
             default_headers={
                 "HTTP-Referer": "https://github.com/cphos/AI_Question",
                 "X-Title": "CPhO Physics Generator",
@@ -30,11 +31,15 @@ class OpenRouterClient(OpenAICompatibleClient):
     @classmethod
     def from_config(cls) -> "OpenRouterClient":
         """从 .env 配置构造（OPENROUTER_API_KEY）。"""
-        from config.config import OPENROUTER_API_KEY, MODEL_TIMEOUT
+        from config.config import OPENROUTER_API_KEY, MODEL_TIMEOUT, LLM_MAX_RETRIES
 
         if not OPENROUTER_API_KEY:
             raise ValueError(
                 "使用 openrouter 提供商但 OPENROUTER_API_KEY 未设置。\n"
                 "  修复方法: 在 .env 中设置 OPENROUTER_API_KEY=sk-or-..."
             )
-        return cls(api_key=OPENROUTER_API_KEY, timeout=MODEL_TIMEOUT)
+        return cls(
+            api_key=OPENROUTER_API_KEY,
+            timeout=MODEL_TIMEOUT,
+            max_retries=LLM_MAX_RETRIES,
+        )

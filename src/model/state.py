@@ -35,21 +35,20 @@
 """
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 # ---------------------------------------------------------------------------
 # 阶段 1：输入与命题规划
 # ---------------------------------------------------------------------------
 
-class TaskInput(TypedDict, total=False):
+class TaskInput(TypedDict):
     """输入规格化器 + 命题规划 Agent 的写入产物。
 
     所属阶段：`PLANNING` 之前由 `spec.normalizer` 写入；`planning_notes`
     由 `spec.planner.run_planning` 在 `PLANNING` 阶段补齐。
 
-    `total=False` —— 各字段为"可选"以允许 Agent 仅返回它真正写入的子集
-    （例如 planner 只返回 `{"planning_notes": "..."}`）。
+    normalizer 负责提供完整输入状态；planner 的局部返回使用 `PlanningOutput`。
     """
 
     mode: str                    # "topic_generation" | "literature_adaptation" | "idea_expansion" | "problem_enrichment"
@@ -58,21 +57,27 @@ class TaskInput(TypedDict, total=False):
     difficulty: str              # 难度等级描述
     total_score: int             # 题目总分（20-80）
     difficulty_profile: dict     # 三维难度目标
-    planning_notes: str          # 规划 Agent 输出的命题规划文本
+    planning_notes: NotRequired[str]  # 规划 Agent 输出的命题规划文本
+
+
+class PlanningOutput(TypedDict, total=False):
+    """命题规划 Agent 的局部返回。"""
+
+    planning_notes: str
 
 
 # ---------------------------------------------------------------------------
 # 阶段 2：命题 / 解题生成
 # ---------------------------------------------------------------------------
 
-class GenerationOutput(TypedDict, total=False):
+class GenerationOutput(TypedDict):
     """命题 Agent + 解题 Agent 的写入产物。
 
     所属阶段：`PROBLEM_GENERATING` / `SOLUTION_GENERATING`。
     `draft_content` 由状态机在两阶段完成后由 `problem_text + solution_text`
     拼接，供下游审核 Agent 消费。
 
-    `total=False` —— 命题 / 解题 Agent 各自只写其中部分字段。
+    normalizer 负责提供完整生成状态；单个 Agent 的局部返回使用 `GenerationPatch`。
     """
 
     title: str                   # 命题 Agent 自拟的题目标题
@@ -81,16 +86,25 @@ class GenerationOutput(TypedDict, total=False):
     draft_content: str           # problem_text + solution_text 合并文本
 
 
+class GenerationPatch(TypedDict, total=False):
+    """命题 / 解题 Agent 的局部返回。"""
+
+    title: str
+    problem_text: str
+    solution_text: str
+    draft_content: str
+
+
 # ---------------------------------------------------------------------------
 # 阶段 3：审核（数学 / 物理 / 结构）
 # ---------------------------------------------------------------------------
 
-class ReviewOutput(TypedDict, total=False):
+class ReviewOutput(TypedDict):
     """三份并行审核 Agent 的写入产物。
 
     所属阶段：`REVIEWING`。三个字段由不同子 Agent 互斥写入，无锁。
 
-    `total=False` —— 单个子 Agent 只写自己负责的那个字段。
+    run_reviews 返回完整审核状态；单个子 Agent 的局部返回使用 `ReviewPatch`。
     """
 
     math_review: str             # 数学检查 Agent 意见
@@ -98,11 +112,19 @@ class ReviewOutput(TypedDict, total=False):
     structure_review: str        # 结构检查器（纯规则，无 LLM）意见
 
 
+class ReviewPatch(TypedDict, total=False):
+    """单个审核 Agent 的局部返回。"""
+
+    math_review: str
+    physics_review: str
+    structure_review: str
+
+
 # ---------------------------------------------------------------------------
 # 阶段 4：仲裁 + 分阶段重试计数
 # ---------------------------------------------------------------------------
 
-class ArbitrationOutput(TypedDict, total=False):
+class ArbitrationOutput(TypedDict):
     """仲裁 Agent 的写入产物。
 
     所属阶段：`ARBITRATING`。`*_retry_count` 仅由本 Agent 在做出 RETRY_*
@@ -128,14 +150,14 @@ class ArbitrationOutput(TypedDict, total=False):
 # 阶段 5：LaTeX 后处理
 # ---------------------------------------------------------------------------
 
-class LaTeXOutput(TypedDict, total=False):
+class LaTeXOutput(TypedDict):
     """LaTeX 后处理流水线的写入产物。
 
     所属阶段：`FORMATTING` → `TEMPLATE_FIXING`。
     流转顺序：`isolate` → `format` → `merge` → `fix_template`，
     每步只追加 / 改写自己的字段，不回填其他阶段的字段。
 
-    `total=False` —— 流水线分多步逐步追加字段。
+    normalizer 负责提供完整 LaTeX 状态；单步后处理的局部返回使用 `LaTeXPatch`。
     """
 
     formula_dict: dict           # Block 公式字典
@@ -146,6 +168,20 @@ class LaTeXOutput(TypedDict, total=False):
     final_latex: str             # 最终 LaTeX（公式已回填）
     template_report: str         # 模板修正报告
     figure_descriptions: dict    # 图片绘制需求
+
+
+class LaTeXPatch(TypedDict, total=False):
+    """LaTeX 后处理流水线单步局部返回。"""
+
+    title: str
+    formula_dict: dict
+    inline_dict: dict
+    figure_dict: dict
+    tagged_text: str
+    formatted_text: str
+    final_latex: str
+    template_report: str
+    figure_descriptions: dict
 
 
 # ---------------------------------------------------------------------------
