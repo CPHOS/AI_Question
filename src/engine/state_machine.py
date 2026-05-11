@@ -98,8 +98,11 @@ class GenerationStateMachine:
             return "end"
 
         invalid_combo = (
-            (decision == "PASS" and error_cat == "fatal")
-            or (decision in ("RETRY_PROBLEM", "RETRY_SOLUTION", "ABORT") and error_cat != "fatal")
+            (decision == "PASS" and error_cat not in ("none", "style"))
+            or (
+                decision in ("RETRY_PROBLEM", "RETRY_SOLUTION", "ABORT")
+                and error_cat != "fatal"
+            )
         )
         if invalid_combo:
             logger.warning(
@@ -109,6 +112,9 @@ class GenerationStateMachine:
             return "end"
 
         if decision == "PASS":
+            if error_cat == "style":
+                logger.info("[router] → pass_with_edits（仅有用语规范问题）")
+                return "pass_with_edits"
             logger.info("[router] → pass（进入后处理流水线）")
             return "pass"
 
@@ -130,13 +136,6 @@ class GenerationStateMachine:
                 else "total_exhausted" if total_exhausted and not stage_exhausted
                 else "stage+total_exhausted"
             )
-            if error_cat == "style":
-                logger.info(
-                    "[router] → pass_with_edits（达上限 [%s] 但 error_category=style，按"
-                    "有条件通过处理）",
-                    cap_reason,
-                )
-                return "pass_with_edits"
             logger.warning(
                 "[router] → end（达上限 [%s]，error_category=%s，强制终止）",
                 cap_reason, error_cat,

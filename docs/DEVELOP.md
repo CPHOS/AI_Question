@@ -104,7 +104,7 @@ INFO 日志，便于追踪。
 | `RETRY_PROBLEM` | 题干有误 | → 回到命题 Agent（重新出题），`problem_retry_count += 1` |
 | `RETRY_SOLUTION` | 解答有误 | → 回到解题 Agent（保留题干，重新解题），`solution_retry_count += 1` |
 | `ABORT` | 不可修复错误 | → 流程终止 |
-| *阶段重试超限 + `style`* | 仅有用语问题 | → 自动切为 `PASS_WITH_EDITS` |
+| *`PASS` + `style`* | 仅有用语问题 | → 自动切为 `PASS_WITH_EDITS` |
 
 **重试计数语义**（分阶段计数）：
 
@@ -119,7 +119,7 @@ INFO 日志，便于追踪。
 | 分类 | 含义 | 仲裁行为 |
 |------|------|----------|
 | `none` | 无错误 | 直接 PASS |
-| `style` | 仅用语规范问题 | RETRY；若达到重试上限则自动切换为 PASS_WITH_EDITS 通过 |
+| `style` | 仅用语规范问题 | 与 PASS 搭配，自动切换为 PASS_WITH_EDITS 通过 |
 | `fatal` | 数学 / 物理 / 逻辑错误 | RETRY → 超限后 ABORT |
 
 `decision` 与 `error_category` 的合法组合在 `src/prompts/arbiter.yaml`
