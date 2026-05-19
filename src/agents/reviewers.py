@@ -181,13 +181,14 @@ def _structure_check(data: WorkflowData) -> ReviewPatch:
     if subq_in_problem:
         unique_numbers = list(dict.fromkeys(subq_in_problem))
         top_level = [n for n in unique_numbers if "." not in n]
-        descendants = [n for n in unique_numbers if "." in n]
-        leaf_count = 0
-        for number in unique_numbers:
-            if "." in number:
-                leaf_count += 1
-            elif not any(child.startswith(f"{number}.") for child in descendants):
-                leaf_count += 1
+        leaf_count = sum(
+            1
+            for number in unique_numbers
+            if not any(
+                child != number and child.startswith(f"{number}.")
+                for child in unique_numbers
+            )
+        )
 
         total_score = data.get("total_score", 0)
         notes.append(

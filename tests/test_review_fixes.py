@@ -232,6 +232,29 @@ def test_structure_check_reports_many_leaf_questions_as_hint_for_40_points():
     assert "题量提示" in result["structure_review"]
 
 
+def test_structure_check_counts_only_deepest_question_nodes_as_leaves():
+    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state.update(
+        {
+            "problem_text": "\n".join(
+                [
+                    "(1) 一级",
+                    "(1.1) 二级",
+                    "(1.1.1) 三级",
+                ]
+            ),
+            "solution_text": "(1.1.1)[40分] 解答",
+            "draft_content": "",
+        }
+    )
+
+    result = _structure_check(state)
+
+    assert "一级小问 1 个" in result["structure_review"]
+    assert "叶子小问 1 个" in result["structure_review"]
+    assert "叶子小问 2 个" not in result["structure_review"]
+
+
 def test_structure_check_does_not_double_count_parent_and_leaf_scores():
     state = from_cli(topic="topic", difficulty="medium", total_score=40)
     state.update(

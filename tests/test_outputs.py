@@ -1,6 +1,13 @@
 import os
 
-from app import _build_texinputs, _build_tikz_stub, _resolve_template_dir, _write_outputs
+from app import (
+    _append_test_log,
+    _build_texinputs,
+    _build_tikz_stub,
+    _resolve_template_dir,
+    _write_outputs,
+)
+from model.stats import clear, record
 
 
 def test_write_outputs_creates_tikz_stub(tmp_path, monkeypatch):
@@ -138,3 +145,30 @@ def test_build_texinputs_preserves_default_search_path():
     result = _build_texinputs("template-dir")
 
     assert result == os.pathsep.join([".", "template-dir", ""])
+
+
+def test_append_test_log_includes_quality_check_node(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.PROJECT_ROOT", tmp_path)
+    clear()
+    record("math_check", 10, 1.0, prompt_tokens=1, completion_tokens=2, total_tokens=3)
+    record("physics_check", 11, 1.0, prompt_tokens=1, completion_tokens=2, total_tokens=3)
+    record("quality_check", 12, 1.0, prompt_tokens=1, completion_tokens=2, total_tokens=3)
+
+    try:
+        _append_test_log(
+            topic="topic",
+            difficulty="medium",
+            model="model",
+            max_tokens=100,
+            total_elapsed=1.0,
+            final_state={},
+            error_msg="",
+        )
+    finally:
+        clear()
+
+    text = (tmp_path / "TEST_LOG.md").read_text(encoding="utf-8")
+
+    assert "- math_check: 10 字符" in text
+    assert "- physics_check: 11 字符" in text
+    assert "- quality_check: 12 字符" in text

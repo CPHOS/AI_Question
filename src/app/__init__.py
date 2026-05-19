@@ -446,7 +446,7 @@ def _append_test_log(
     ordered_keys += _sorted_keys("planner")
     ordered_keys += _sorted_keys("problem_gen_r")
     ordered_keys += _sorted_keys("solution_gen_r")
-    for k in ("math_check", "physics_check"):
+    for k in ("math_check", "physics_check", "quality_check"):
         if k in stats:
             ordered_keys.append(k)
     ordered_keys += _sorted_keys("arbiter_r")
