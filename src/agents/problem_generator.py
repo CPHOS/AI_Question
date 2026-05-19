@@ -19,6 +19,8 @@ from config.config import (
     BIG_MODEL_NAME, BIG_MODEL_TEMPERATURE, BIG_MODEL_MAX_TOKENS, logger,
 )
 from prompts import load
+from utils.retry_context import build_problem_retry_context
+from utils.title import extract_leading_title, infer_title_from_content, is_noisy_title
 
 
 def _score_tier(total_score: int) -> str:
@@ -33,7 +35,7 @@ def _score_tier(total_score: int) -> str:
 
 def _strip_thinking_chain(content: str) -> str:
     """过滤 thinking model（如 Gemini）可能泄漏的思维链前缀。"""
-    for marker in ["【题干】", "【题干】："]:
+    for marker in ["【标题】", "【标题】：", "标题：", "标题:", "【题干】", "【题干】："]:
         idx = content.find(marker)
         if idx > 0:
             logger.info("[problem_gen] 检测到思维链前缀，从 '%s' 处截取", marker)
@@ -42,9 +44,12 @@ def _strip_thinking_chain(content: str) -> str:
 
     if re.search(r'\b(Wait|Let\'s check|Hmm|Actually|OK so)\b', content[:200]):
         logger.warning("[problem_gen] 输出疑似包含思维链碎片")
-        last_idx = content.rfind("【题干】")
-        if last_idx >= 0:
-            content = content[last_idx:]
+        title_idx = max(content.rfind("【标题】"), content.rfind("【标题】："))
+        stmt_idx = content.rfind("【题干】")
+        if title_idx >= 0:
+            content = content[title_idx:]
+        elif stmt_idx >= 0:
+            content = content[stmt_idx:]
 
     return content
 
@@ -77,10 +82,13 @@ def problem_generator_agent(data: WorkflowData) -> dict:
     planning_notes = data.get("planning_notes", "")
 
     if retry > 0 and data.get("arbiter_feedback"):
+        retry_context = build_problem_retry_context(
+            arbiter_feedback=data["arbiter_feedback"],
+            problem_text=data.get("problem_text", ""),
+            planning_notes=planning_notes,
+        )
         user_prompt = load("problem_generator", "user_prompt_retry",
-                           arbiter_feedback=data["arbiter_feedback"],
-                           problem_text=data.get("problem_text", ""),
-                           planning_notes=planning_notes)
+                           retry_context=retry_context)
     elif mode == "topic_generation":
         user_prompt = load("problem_generator", "user_prompt_topic",
                            topic=data["topic"],
@@ -120,12 +128,9 @@ def problem_generator_agent(data: WorkflowData) -> dict:
 
     content = _strip_thinking_chain(content)
 
-    # 提取标题
-    title = ""
-    title_match = re.match(r'【标题】\s*(.+?)\s*\n', content)
-    if title_match:
-        title = title_match.group(1).strip()
-        content = content[title_match.end():]
+    title, content = extract_leading_title(content)
+    if is_noisy_title(title):
+        title = infer_title_from_content(content, data.get("topic", ""))
 
     record(
         f"problem_gen_r{retry}", len(content), elapsed,
@@ -142,4 +147,5 @@ def problem_generator_agent(data: WorkflowData) -> dict:
         "math_review": "",
         "physics_review": "",
         "structure_review": "",
+        "quality_review": "",
     }

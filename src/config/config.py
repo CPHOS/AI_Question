@@ -60,9 +60,28 @@ SMALL_MODEL_MAX_TOKENS: int = int(os.getenv("SMALL_MODEL_MAX_TOKENS", "8192"))
 # 通用超时设置
 MODEL_TIMEOUT: int = int(os.getenv("MODEL_TIMEOUT", "600"))
 LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
+LLM_STREAMING: bool = os.getenv("LLM_STREAMING", "false").lower() not in {
+    "0", "false", "no", "off"
+}
+
+# ============ LaTeX 编译设置 ============
+LATEX_ENGINE: str = os.getenv("LATEX_ENGINE", "xelatex")
+AUTO_COMPILE_FIGURES: bool = os.getenv("AUTO_COMPILE_FIGURES", "true").lower() not in {
+    "0", "false", "no", "off"
+}
+AUTO_COMPILE_LATEX: bool = os.getenv("AUTO_COMPILE_LATEX", "false").lower() not in {
+    "0", "false", "no", "off"
+}
+CPHOS_TEMPLATE_DIR: str = os.getenv(
+    "CPHOS_TEMPLATE_DIR",
+    str((PROJECT_ROOT.parent / "CPHOS-Latex" / "theory").resolve()),
+)
 
 # ============ 流程控制 ============
 MAX_RETRY_COUNT: int = int(os.getenv("MAX_RETRY_COUNT", "3"))
+
+# ============ 源材料控制 ============
+SOURCE_MATERIAL_MAX_CHARS: int = int(os.getenv("SOURCE_MATERIAL_MAX_CHARS", "60000"))
 
 # ============ 占位符前后缀 ============
 BLOCK_PLACEHOLDER_PREFIX: str = "{{BLOCK_MATH_"

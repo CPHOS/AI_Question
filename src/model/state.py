@@ -8,7 +8,7 @@
 1. **每个阶段维护自己的数据记录**，作为独立 `TypedDict`：
      - `TaskInput`             — 输入与命题规划阶段的写入产物
      - `GenerationOutput`      — 命题 / 解题 Agent 的写入产物
-     - `ReviewOutput`          — 数学 / 物理 / 结构审核的写入产物
+     - `ReviewOutput`          — 数学 / 物理 / 结构 / 质量审核的写入产物
      - `ArbitrationOutput`     — 仲裁 Agent 的写入产物（含分阶段重试计数）
      - `LaTeXOutput`           — LaTeX 后处理流水线的写入产物
 
@@ -25,8 +25,8 @@
 
 3. 并行节点写冲突说明：
    `math_verifier` 仅写 `math_review`、`physics_verifier` 仅写 `physics_review`、
-   `structure_checker` 仅写 `structure_review`。三者属于同一阶段
-   (`ReviewOutput`) 的不同字段，并行写不冲突。
+   `structure_checker` 仅写 `structure_review`，`quality_checker` 仅写
+   `quality_review`。四者属于同一阶段 (`ReviewOutput`) 的不同字段，并行写不冲突。
 
 4. 选择 `TypedDict` 而非 `pydantic.BaseModel`：
    - 工作流字典在阶段间用 `dict.update()` 合并是高频操作；用对象会引入额外封装；
@@ -96,13 +96,13 @@ class GenerationPatch(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------------------
-# 阶段 3：审核（数学 / 物理 / 结构）
+# 阶段 3：审核（数学 / 物理 / 结构 / 质量）
 # ---------------------------------------------------------------------------
 
 class ReviewOutput(TypedDict):
-    """三份并行审核 Agent 的写入产物。
+    """四路并行审核 Agent 的写入产物。
 
-    所属阶段：`REVIEWING`。三个字段由不同子 Agent 互斥写入，无锁。
+    所属阶段：`REVIEWING`。四个字段由不同子 Agent 互斥写入，无锁。
 
     run_reviews 返回完整审核状态；单个子 Agent 的局部返回使用 `ReviewPatch`。
     """
@@ -110,6 +110,7 @@ class ReviewOutput(TypedDict):
     math_review: str             # 数学检查 Agent 意见
     physics_review: str          # 物理检查 Agent 意见
     structure_review: str        # 结构检查器（纯规则，无 LLM）意见
+    quality_review: str          # 竞赛题质量检查 Agent 意见
 
 
 class ReviewPatch(TypedDict, total=False):
@@ -118,6 +119,7 @@ class ReviewPatch(TypedDict, total=False):
     math_review: str
     physics_review: str
     structure_review: str
+    quality_review: str
 
 
 # ---------------------------------------------------------------------------

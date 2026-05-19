@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from spec.task import TaskSpec, QuestionMode, DifficultyProfile
+from spec.source_loader import load_source_material
 from model.state import (
     WorkflowData,
     TaskInput,
@@ -28,12 +29,12 @@ def _infer_difficulty_profile(total_score: int) -> DifficultyProfile:
     if total_score < 40:
         return DifficultyProfile(
             target_computation=5, target_thinking=5, target_overall=5,
-            question_count=3, score_distribution=[],
+            question_count=2, score_distribution=[],
         )
     elif total_score <= 60:
         return DifficultyProfile(
             target_computation=6, target_thinking=7, target_overall=7,
-            question_count=4, score_distribution=[],
+            question_count=3, score_distribution=[],
         )
     else:
         return DifficultyProfile(
@@ -62,9 +63,7 @@ def from_cli(
     source_material = ""
     if source_file:
         p = Path(source_file)
-        if not p.exists():
-            raise FileNotFoundError(f"源材料文件未找到: {p}")
-        source_material = p.read_text(encoding="utf-8")
+        source_material = load_source_material(source_file)
         if not topic:
             topic = p.stem
 
@@ -139,6 +138,7 @@ def _spec_to_workflow_data(spec: TaskSpec) -> WorkflowData:
         "math_review": "",
         "physics_review": "",
         "structure_review": "",
+        "quality_review": "",
     }
     initial_arbitration: ArbitrationOutput = {
         "arbiter_decision": "",
@@ -181,6 +181,7 @@ def _spec_to_workflow_data(spec: TaskSpec) -> WorkflowData:
         "math_review",
         "physics_review",
         "structure_review",
+        "quality_review",
         "arbiter_decision",
         "arbiter_feedback",
         "arbiter_reason",

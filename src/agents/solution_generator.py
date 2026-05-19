@@ -7,7 +7,6 @@
     solution_retry_count + TaskInput.total_score
   - 写入：GenerationOutput.solution_text 单字段
 """
-import re
 import time
 
 from model.state import WorkflowData, GenerationPatch
@@ -17,6 +16,7 @@ from config.config import (
     BIG_MODEL_NAME, BIG_MODEL_TEMPERATURE, BIG_MODEL_MAX_TOKENS, logger,
 )
 from prompts import load
+from utils.retry_context import build_solution_retry_context
 
 
 def solution_generator_agent(data: WorkflowData) -> GenerationPatch:
@@ -37,10 +37,13 @@ def solution_generator_agent(data: WorkflowData) -> GenerationPatch:
                          total_score=str(data["total_score"]))
 
     if retry > 0 and data.get("arbiter_feedback"):
+        retry_context = build_solution_retry_context(
+            arbiter_feedback=data["arbiter_feedback"],
+            problem_text=data.get("problem_text", ""),
+            solution_text=data.get("solution_text", ""),
+        )
         user_prompt = load("solution_generator", "user_prompt_retry",
-                           arbiter_feedback=data["arbiter_feedback"],
-                           problem_text=data.get("problem_text", ""),
-                           solution_text=data.get("solution_text", ""))
+                           retry_context=retry_context)
     else:
         user_prompt = load("solution_generator", "user_prompt_initial",
                            problem_text=data.get("problem_text", ""),

@@ -4,6 +4,10 @@ OpenRouter 客户端实现。
 """
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
+
 from client.base import register_provider
 from client.openai_compat import OpenAICompatibleClient
 
@@ -36,10 +40,42 @@ class OpenRouterClient(OpenAICompatibleClient):
         if not OPENROUTER_API_KEY:
             raise ValueError(
                 "使用 openrouter 提供商但 OPENROUTER_API_KEY 未设置。\n"
-                "  修复方法: 在 .env 中设置 OPENROUTER_API_KEY=sk-or-..."
+                "  修复方法: 在 .env 中设置 OPENROUTER_API_KEY=<OPENROUTER_API_KEY>"
             )
         return cls(
             api_key=OPENROUTER_API_KEY,
             timeout=MODEL_TIMEOUT,
             max_retries=LLM_MAX_RETRIES,
         )
+
+
+def query_openrouter_credits(api_key: str, timeout: int = 30) -> dict:
+    """查询 OpenRouter 账户额度快照。
+
+    返回字段尽量保持原始接口信息，并额外补 `balance`。接口异常时抛出
+    `RuntimeError`，由调用方决定是否降级为报告中的告警。
+    """
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY 未设置，无法查询 OpenRouter 额度")
+
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenRouter 额度查询失败: HTTP {exc.code}: {body}") from exc
+    except Exception as exc:  # pragma: no cover - 网络环境差异较大
+        raise RuntimeError(f"OpenRouter 额度查询失败: {type(exc).__name__}: {exc}") from exc
+
+    data = payload.get("data", payload)
+    total_credits = data.get("total_credits")
+    total_usage = data.get("total_usage")
+    if isinstance(total_credits, (int, float)) and isinstance(total_usage, (int, float)):
+        data = dict(data)
+        data["balance"] = total_credits - total_usage
+    return data

@@ -29,9 +29,11 @@ def _strip_code_fences(text: str) -> str:
 
 def _clean_placeholder_braces(text: str) -> str:
     """清理小模型在占位符外额外添加的花括号。"""
-    text = re.sub(r'\{+(\{BLOCK_MATH_\d+\})\}+', r'{\1}', text)
-    text = re.sub(r'\{+(\{INLINE_MATH_\d+\})\}+', r'{\1}', text)
-    text = re.sub(r'\{+(\{FIGURE_\d+\})\}+', r'{\1}', text)
+    # 只清理完整包在占位符外的一层额外花括号。不能用贪婪的 `}+`
+    # 吞掉占位符后的结构性右括号，例如 \addtext{... {{INLINE_MATH_1}}}{1}。
+    text = re.sub(r'\{\s*(\{\{BLOCK_MATH_\d+\}\})\s*\}(?!\{)', r'\1', text)
+    text = re.sub(r'\{\s*(\{\{INLINE_MATH_\d+\}\})\s*\}(?!\{)', r'\1', text)
+    text = re.sub(r'\{\s*(\{\{FIGURE_\d+\}\})\s*\}(?!\{)', r'\1', text)
     text = re.sub(r'\\\[\s*(\{\{BLOCK_MATH_\d+\}\})\s*\\\]', r'\1', text)
     text = re.sub(r'\$\s*(\{\{INLINE_MATH_\d+\}\})\s*\$', r'\1', text)
     return text
