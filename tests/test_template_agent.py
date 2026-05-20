@@ -118,6 +118,120 @@ def test_template_check_rejects_missing_scoring_points():
     assert "叶子解答 1缺少可解析评分点" in result["template_report"]
 
 
+def test_template_accepts_addtext_with_nested_braces_as_scoring_point():
+    latex = (
+        "\\documentclass[answer]{cphos}\n"
+        "\\begin{document}\n"
+        "\\begin{problem}[10]{测试}\n"
+        "\\begin{problemstatement}\n"
+        "\\subq{1} 题\n"
+        "\\end{problemstatement}\n"
+        "\\begin{solution}\n"
+        "\\solsubq{1}{10}\n"
+        "\\addtext{代入初值 $x_{0}$ 后得到结论}{10}\n"
+        "\\scoring\n"
+        "\\end{solution}\n"
+        "\\end{problem}\n"
+        "\\end{document}\n"
+    )
+
+    result = fix_template({"final_latex": latex})
+
+    assert result["template_report"] == "模板检查通过，无需修正。"
+
+
+def test_template_rejects_empty_addtext_as_scoring_point():
+    latex = (
+        "\\documentclass[answer]{cphos}\n"
+        "\\begin{document}\n"
+        "\\begin{problem}[10]{测试}\n"
+        "\\begin{problemstatement}\n"
+        "\\subq{1} 题\n"
+        "\\end{problemstatement}\n"
+        "\\begin{solution}\n"
+        "\\solsubq{1}{10}\n"
+        "\\addtext{}{10}\n"
+        "\\scoring\n"
+        "\\end{solution}\n"
+        "\\end{problem}\n"
+        "\\end{document}\n"
+    )
+
+    result = fix_template({"final_latex": latex})
+
+    assert "缺少 \\eqtagscore 或 \\addtext 评分点" in result["template_report"]
+    assert "叶子解答 1缺少可解析评分点" in result["template_report"]
+
+
+def test_template_rejects_whitespace_addtext_as_scoring_point():
+    latex = (
+        "\\documentclass[answer]{cphos}\n"
+        "\\begin{document}\n"
+        "\\begin{problem}[10]{测试}\n"
+        "\\begin{problemstatement}\n"
+        "\\subq{1} 题\n"
+        "\\end{problemstatement}\n"
+        "\\begin{solution}\n"
+        "\\solsubq{1}{10}\n"
+        "\\addtext{   }{10}\n"
+        "\\scoring\n"
+        "\\end{solution}\n"
+        "\\end{problem}\n"
+        "\\end{document}\n"
+    )
+
+    result = fix_template({"final_latex": latex})
+
+    assert "缺少 \\eqtagscore 或 \\addtext 评分点" in result["template_report"]
+    assert "叶子解答 1缺少可解析评分点" in result["template_report"]
+
+
+def test_template_rejects_nested_empty_addtext_as_scoring_point():
+    latex = (
+        "\\documentclass[answer]{cphos}\n"
+        "\\begin{document}\n"
+        "\\begin{problem}[10]{测试}\n"
+        "\\begin{problemstatement}\n"
+        "\\subq{1} 题\n"
+        "\\end{problemstatement}\n"
+        "\\begin{solution}\n"
+        "\\solsubq{1}{10}\n"
+        "\\addtext{{}}{10}\n"
+        "\\scoring\n"
+        "\\end{solution}\n"
+        "\\end{problem}\n"
+        "\\end{document}\n"
+    )
+
+    result = fix_template({"final_latex": latex})
+
+    assert "缺少 \\eqtagscore 或 \\addtext 评分点" in result["template_report"]
+    assert "叶子解答 1缺少可解析评分点" in result["template_report"]
+
+
+def test_template_rejects_nested_whitespace_addtext_as_scoring_point():
+    latex = (
+        "\\documentclass[answer]{cphos}\n"
+        "\\begin{document}\n"
+        "\\begin{problem}[10]{测试}\n"
+        "\\begin{problemstatement}\n"
+        "\\subq{1} 题\n"
+        "\\end{problemstatement}\n"
+        "\\begin{solution}\n"
+        "\\solsubq{1}{10}\n"
+        "\\addtext{{   }}{10}\n"
+        "\\scoring\n"
+        "\\end{solution}\n"
+        "\\end{problem}\n"
+        "\\end{document}\n"
+    )
+
+    result = fix_template({"final_latex": latex})
+
+    assert "缺少 \\eqtagscore 或 \\addtext 评分点" in result["template_report"]
+    assert "叶子解答 1缺少可解析评分点" in result["template_report"]
+
+
 def test_template_check_rejects_missing_third_level_solution():
     latex = (
         "\\documentclass[answer]{cphos}\n"

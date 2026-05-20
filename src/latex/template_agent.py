@@ -14,7 +14,9 @@ from model.state import WorkflowData, LaTeXPatch
 from config.config import logger
 
 
-_SCORING_POINT_RE = re.compile(r'\\(?:eqtagscore|addtext)\{[^}]+\}\{\d+\}')
+_EQTAG_SCORE_RE = re.compile(r'\\eqtagscore\{[^}]+\}\{\d+\}')
+_ADDTEXT_SCORE_RE = re.compile(r'\\addtext\{(?P<body>(?:[^{}]|\{[^{}]*\})+)\}\{\d+\}')
+_EMPTY_BRACE_GROUP_RE = re.compile(r'\{\s*\}')
 _SOLUTION_MARKER_RE = re.compile(
     r'\\(?P<cmd>solPart|solsubq|solsubsubq|solsubsubsubq)\{(?P<num>[^}]+)\}\{(?P<score>\d+)\}'
 )
@@ -55,6 +57,15 @@ def _solution_leaf_segments(sol: str) -> list[tuple[str, str]]:
         if not has_child:
             leaves.append((hit.group("num"), sol[hit.start():end]))
     return leaves
+
+
+def _has_scoring_point(tex: str) -> bool:
+    if _EQTAG_SCORE_RE.search(tex):
+        return True
+    return any(
+        _EMPTY_BRACE_GROUP_RE.sub("", match.group("body")).strip()
+        for match in _ADDTEXT_SCORE_RE.finditer(tex)
+    )
 
 
 def _rule_check(latex: str) -> list[str]:
@@ -127,10 +138,10 @@ def _rule_check(latex: str) -> list[str]:
             issues.append(f"AI Reviewer 契约不满足: 解答缺少三级小问 {sorted(stmt_subsub - sol_subsub)}")
         if stmt_parts - sol_parts:
             issues.append(f"AI Reviewer 契约不满足: 解答缺少 Part {sorted(stmt_parts - sol_parts)}")
-        if sol.strip() and not _SCORING_POINT_RE.search(sol):
+        if sol.strip() and not _has_scoring_point(sol):
             issues.append("AI Reviewer 契约不满足: 解答缺少 \\eqtagscore 或 \\addtext 评分点")
         for number, segment in _solution_leaf_segments(sol):
-            if segment.strip() and not _SCORING_POINT_RE.search(segment):
+            if segment.strip() and not _has_scoring_point(segment):
                 label = f" {number}" if number else ""
                 issues.append(f"AI Reviewer 契约不满足: 叶子解答{label}缺少可解析评分点")
 

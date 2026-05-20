@@ -96,18 +96,22 @@ def isolate(data: WorkflowData) -> LaTeXPatch:
         # Fallback — 尝试提取 $$...$$
         logger.warning("[isolate] 未找到 <block_math> 标签，启用 $$...$$ fallback")
         fallback_matches = list(re.finditer(FALLBACK_BLOCK_PATTERN, text, re.DOTALL))
+        match_count = len(fallback_matches)
         for idx, match in enumerate(reversed(fallback_matches), start=1):
             content = match.group(1).strip()
-            label = f"eq:auto_{idx}"
+            document_index = match_count - idx + 1
+            label = f"eq:auto_{document_index}"
             placeholder = f"{BLOCK_PLACEHOLDER_PREFIX}{idx}{BLOCK_PLACEHOLDER_SUFFIX}"
             formula_dict[placeholder] = {"label": label, "content": content, "score": ""}
             text = text[:match.start()] + f"\n{placeholder}\n" + text[match.end():]
         logger.info("[isolate] Fallback 提取 Block 公式: %d 个", len(formula_dict))
     else:
+        match_count = len(block_matches)
         for idx, match in enumerate(reversed(block_matches), start=1):
             label, score = _parse_block_attrs(match.group("attrs"))
             if not label:
-                label = f"eq:auto_{idx}"
+                document_index = match_count - idx + 1
+                label = f"eq:auto_{document_index}"
             content = match.group("content").strip()
             placeholder = f"{BLOCK_PLACEHOLDER_PREFIX}{idx}{BLOCK_PLACEHOLDER_SUFFIX}"
             formula_dict[placeholder] = {"label": label, "content": content, "score": score}
