@@ -16,6 +16,14 @@ from config.config import SOURCE_MATERIAL_MAX_CHARS
 _TEXT_EXTENSIONS = {".txt", ".md", ".tex", ".csv", ".tsv", ".json"}
 
 
+def _decode_process_output(output: bytes | str | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace").strip()
+    return str(output).strip()
+
+
 def _truncate(text: str, *, max_chars: int = SOURCE_MATERIAL_MAX_CHARS) -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
@@ -34,13 +42,37 @@ def _load_pdf(path: Path) -> str:
             "请安装 poppler 或 TeX Live 自带的 pdftotext。"
         )
 
-    proc = subprocess.run(
-        [executable, "-layout", str(path), "-"],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=60,
-    )
+    try:
+        proc = subprocess.run(
+            [executable, "-layout", str(path), "-"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = _decode_process_output(exc.stderr)
+        detail = f"退出码 {exc.returncode}"
+        if stderr:
+            detail += f"，stderr: {stderr}"
+        raise RuntimeError(
+            f"无法读取 PDF 源材料：pdftotext 执行失败（{detail}）。"
+            "请确认 PDF 未损坏且未加密。"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        stderr = _decode_process_output(exc.stderr)
+        detail = f"超过 {exc.timeout} 秒"
+        if stderr:
+            detail += f"，stderr: {stderr}"
+        raise RuntimeError(
+            f"无法读取 PDF 源材料：pdftotext 执行超时（{detail}）。"
+            "请确认 PDF 未损坏且未加密。"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"无法读取 PDF 源材料：pdftotext 启动失败（{exc}）。"
+            "请确认 pdftotext 可执行文件可访问。"
+        ) from exc
     raw = proc.stdout.decode("utf-8", errors="replace")
     pages = [page.strip() for page in raw.split("\f") if page.strip()]
     if not pages:

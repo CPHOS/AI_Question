@@ -321,6 +321,92 @@ def test_structure_check_sums_mixed_parent_and_leaf_score_groups():
     assert "分值合计" not in result["structure_review"]
 
 
+def test_structure_check_reports_duplicate_solution_question_scores():
+    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state.update(
+        {
+            "problem_text": "\n".join(
+                [
+                    "(1) 第一问",
+                    "(2) 第二问",
+                ]
+            ),
+            "solution_text": "\n".join(
+                [
+                    "(1)[20分] 解答",
+                    "(1)[10分] 重复解答",
+                    "(2)[20分] 解答",
+                ]
+            ),
+            "draft_content": "",
+        }
+    )
+
+    result = _structure_check(state)
+
+    assert "重复的小问分值标注: 1" in result["structure_review"]
+    assert "【结构检查问题】" in result["structure_review"]
+
+
+def test_structure_check_reports_duplicate_solution_part_scores():
+    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state.update(
+        {
+            "problem_text": "\n".join(
+                [
+                    "A. 第一部分",
+                    "B. 第二部分",
+                ]
+            ),
+            "solution_text": "\n".join(
+                [
+                    "A. [20分]",
+                    "B. [20分]",
+                    "A. [5分]",
+                ]
+            ),
+            "draft_content": "",
+        }
+    )
+
+    result = _structure_check(state)
+
+    assert "重复的 Part 分值标注: A" in result["structure_review"]
+    assert "【结构检查问题】" in result["structure_review"]
+
+
+def test_structure_check_allows_repeated_subquestions_under_part_scores():
+    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state.update(
+        {
+            "problem_text": "\n".join(
+                [
+                    "A. 第一部分",
+                    "(1) 第一问",
+                    "B. 第二部分",
+                    "(1) 第一问",
+                ]
+            ),
+            "solution_text": "\n".join(
+                [
+                    "A. [20分]",
+                    "(1)[10分] 解答",
+                    "(2)[10分] 解答",
+                    "B. [20分]",
+                    "(1)[15分] 解答",
+                    "(2)[5分] 解答",
+                ]
+            ),
+            "draft_content": "",
+        }
+    )
+
+    result = _structure_check(state)
+
+    assert "【结构检查通过】" in result["structure_review"]
+    assert "重复的小问分值标注" not in result["structure_review"]
+
+
 def test_structure_check_accepts_fullwidth_question_numbers():
     state = from_cli(topic="topic", difficulty="medium", total_score=40)
     state.update(

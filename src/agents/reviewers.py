@@ -22,11 +22,25 @@ from prompts import load
 _NUMBERED_QUESTION_RE = r'[（(](\d+(?:\.\d+)*)[）)]'
 
 
+def _find_duplicates(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates
+
+
 def _sum_hierarchical_scores(scored_items: list[tuple[str, str]]) -> int:
     """按小问层级求和：有父级分值时用父级，否则累加该子树下的可见子级分值。"""
+    duplicates = _find_duplicates([number for number, _ in scored_items])
+    if duplicates:
+        raise ValueError(f"重复的小问分值标注: {', '.join(duplicates)}")
+
     scores: dict[str, int] = {}
     for number, score in scored_items:
-        scores.setdefault(number, int(score))
+        scores[number] = int(score)
     if not scores:
         return 0
 
@@ -209,12 +223,25 @@ def _structure_check(data: WorkflowData) -> ReviewPatch:
         issues.append("解答中未找到带分值的小问标注 (N)[X分]、（N）[X分] 或 A.[X分]")
 
     # 检查分值合计
+    score_total_available = False
     if scored_parts:
-        total = sum(int(s) for _, s in scored_parts)
+        duplicate_parts = _find_duplicates([part for part, _ in scored_parts])
+        if duplicate_parts:
+            issues.append(f"重复的 Part 分值标注: {', '.join(duplicate_parts)}")
+            total = 0
+        else:
+            total = sum(int(s) for _, s in scored_parts)
+            score_total_available = True
     else:
-        total = _sum_hierarchical_scores(scored_subqs)
+        duplicate_subqs = _find_duplicates([number for number, _ in scored_subqs])
+        if duplicate_subqs:
+            issues.append(f"重复的小问分值标注: {', '.join(duplicate_subqs)}")
+            total = 0
+        else:
+            total = _sum_hierarchical_scores(scored_subqs)
+            score_total_available = True
 
-    if scored_subqs or scored_parts:
+    if score_total_available and (scored_subqs or scored_parts):
         expected = data.get("total_score", 0)
         if expected > 0 and total != expected:
             issues.append(f"分值合计 {total} ≠ 预期总分 {expected}")

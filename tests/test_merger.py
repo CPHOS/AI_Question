@@ -2,6 +2,8 @@
 回填器单元测试。
 运行: uv run pytest tests/test_merger.py -v
 """
+import pytest
+
 from latex.merge import merge as python_merger
 
 
@@ -437,6 +439,58 @@ class TestScoringAndTotal:
             ),
         )
         result = python_merger(state)
+        assert "\\begin{problem}[40]{test}" in result["final_latex"]
+
+    def test_duplicate_solution_question_scores_are_rejected(self):
+        state = _make_state(
+            formatted_text=(
+                "\\begin{problem}{test}\n"
+                "\\begin{solution}\n"
+                "(1)[10分]\n"
+                "(1)[15分]\n"
+                "(2)[15分]\n"
+                "\\end{solution}\n"
+                "\\end{problem}\n"
+            ),
+        )
+
+        with pytest.raises(ValueError, match="重复的小问评分编号: 1"):
+            python_merger(state)
+
+    def test_duplicate_solution_part_scores_are_rejected(self):
+        state = _make_state(
+            formatted_text=(
+                "\\begin{problem}{test}\n"
+                "\\begin{solution}\n"
+                "A. [10分]\n"
+                "B. [15分]\n"
+                "A. [15分]\n"
+                "\\end{solution}\n"
+                "\\end{problem}\n"
+            ),
+        )
+
+        with pytest.raises(ValueError, match="重复的 Part 评分编号: A"):
+            python_merger(state)
+
+    def test_repeated_subquestions_are_allowed_under_part_totals(self):
+        state = _make_state(
+            formatted_text=(
+                "\\begin{problem}{test}\n"
+                "\\begin{solution}\n"
+                "A. [20分]\n"
+                "(1)[10分]\n"
+                "(2)[10分]\n"
+                "B. [20分]\n"
+                "(1)[15分]\n"
+                "(2)[5分]\n"
+                "\\end{solution}\n"
+                "\\end{problem}\n"
+            ),
+        )
+
+        result = python_merger(state)
+
         assert "\\begin{problem}[40]{test}" in result["final_latex"]
 
     def test_missing_solution_parent_headers_are_inserted(self):

@@ -52,11 +52,25 @@ def _escape_latex_text(text: str) -> str:
     return "".join(mapping.get(ch, ch) for ch in text)
 
 
+def _find_duplicates(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates
+
+
 def _sum_hierarchical_scores(scored_items: list[tuple[str, str]]) -> int:
     """按小问层级求和：有父级分值时用父级，否则累加该子树下的可见子级分值。"""
+    duplicates = _find_duplicates([number for number, _ in scored_items])
+    if duplicates:
+        raise ValueError(f"重复的小问评分编号: {', '.join(duplicates)}")
+
     scores: dict[str, int] = {}
     for number, score in scored_items:
-        scores.setdefault(number, int(score))
+        scores[number] = int(score)
     if not scores:
         return 0
 
@@ -355,9 +369,12 @@ def _insert_missing_solution_parent_headers(text: str) -> str:
 
 def _compute_total_score(text: str) -> int:
     """从解答评分命令中计算总分。"""
-    scores_part = re.findall(r'\\solPart\{[A-Z]\}\{(\d+)\}', text)
+    scores_part = re.findall(r'\\solPart\{([A-Z])\}\{(\d+)\}', text)
     if scores_part:
-        return sum(int(score) for score in scores_part)
+        duplicate_parts = _find_duplicates([part for part, _ in scores_part])
+        if duplicate_parts:
+            raise ValueError(f"重复的 Part 评分编号: {', '.join(duplicate_parts)}")
+        return sum(int(score) for _, score in scores_part)
 
     scored_items = re.findall(r'\\solsub(?:sub(?:sub)?)?q\{(\d+(?:\.\d+)*)\}\{(\d+)\}', text)
     return _sum_hierarchical_scores(scored_items)
