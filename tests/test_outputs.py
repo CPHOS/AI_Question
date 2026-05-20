@@ -1,10 +1,12 @@
 import os
+import subprocess
 
 from app import (
     _append_test_log,
     _build_texinputs,
     _build_tikz_stub,
     _resolve_template_dir,
+    _run_latex_compile,
     _write_outputs,
 )
 from model.stats import clear, record
@@ -145,6 +147,42 @@ def test_build_texinputs_preserves_default_search_path():
     result = _build_texinputs("template-dir")
 
     assert result == os.pathsep.join([".", "template-dir", ""])
+
+
+def test_run_latex_compile_reports_timeout(tmp_path, monkeypatch):
+    tex_path = tmp_path / "fig1.tex"
+    tex_path.write_text("\\documentclass{standalone}\\begin{document}x\\end{document}", encoding="utf-8")
+
+    monkeypatch.setattr("app.shutil.which", lambda name: "xelatex")
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr("app.subprocess.run", _timeout)
+
+    ok, detail = _run_latex_compile(tex_path)
+
+    assert ok is False
+    assert "timed out" in detail
+    assert "fig1.tex" in detail
+
+
+def test_run_latex_compile_reports_start_failure(tmp_path, monkeypatch):
+    tex_path = tmp_path / "fig1.tex"
+    tex_path.write_text("\\documentclass{standalone}\\begin{document}x\\end{document}", encoding="utf-8")
+
+    monkeypatch.setattr("app.shutil.which", lambda name: "xelatex")
+
+    def _start_failure(*args, **kwargs):
+        raise OSError("denied")
+
+    monkeypatch.setattr("app.subprocess.run", _start_failure)
+
+    ok, detail = _run_latex_compile(tex_path)
+
+    assert ok is False
+    assert "failed to start" in detail
+    assert "denied" in detail
 
 
 def test_append_test_log_includes_quality_check_node(tmp_path, monkeypatch):

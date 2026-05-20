@@ -141,17 +141,22 @@ def _run_latex_compile(tex_path: Path, *, cphos_template_dir: str = "") -> tuple
     if cphos_template_dir:
         env["TEXINPUTS"] = _build_texinputs(cphos_template_dir, env.get("TEXINPUTS", ""))
 
-    proc = subprocess.run(
-        [engine, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
-        cwd=tex_path.parent,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=180,
-        env=env,
-    )
+    try:
+        proc = subprocess.run(
+            [engine, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
+            cwd=tex_path.parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return False, f"LaTeX compile timed out after {exc.timeout}s: {tex_path.name}"
+    except OSError as exc:
+        return False, f"LaTeX compile failed to start: {exc}"
     if proc.returncode == 0:
         return True, "compiled"
     tail = "\n".join(proc.stdout.splitlines()[-20:])
