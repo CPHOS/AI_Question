@@ -18,6 +18,23 @@ from config.config import (
     FIGURE_PATTERN, FIGURE_PLACEHOLDER_PREFIX, FIGURE_PLACEHOLDER_SUFFIX,
     logger,
 )
+from utils.title import extract_leading_title, infer_title_from_content, is_noisy_title
+
+
+_BLOCK_TAG_PATTERN = re.compile(
+    r'<block_math(?P<attrs>[^>]*)>\s*(?P<content>.*?)\s*(?:</block_math>|\\end\{block_math\})',
+    re.DOTALL,
+)
+
+
+def _parse_block_attrs(attrs: str) -> tuple[str, str]:
+    """Extract optional label and score attributes from a block_math tag."""
+    label_match = re.search(r'label="([^"]+)"', attrs)
+    score_match = re.search(r'score="(\d+)"', attrs)
+    return (
+        label_match.group(1).strip() if label_match else "",
+        score_match.group(1).strip() if score_match else "",
+    )
 
 
 def _sanitize_block_tags(text: str) -> str:
@@ -43,11 +60,10 @@ def isolate(data: WorkflowData) -> LaTeXPatch:
     text = data["draft_content"]
 
     # ===== Phase 0a: 提取标题 =====
-    title = data.get("title", "")
-    title_match = re.match(r'【标题】\s*(.+?)\s*\n', text)
-    if title_match:
-        title = title_match.group(1).strip()
-        text = text[title_match.end():]
+    title, text = extract_leading_title(text, default=data.get("title", ""))
+    if is_noisy_title(title):
+        title = infer_title_from_content(text, data.get("topic", ""))
+    if title:
         logger.info("[isolate] 提取标题: %s", title)
 
     # ===== Phase 0b: 预处理修正错误标签 =====
@@ -74,24 +90,29 @@ def isolate(data: WorkflowData) -> LaTeXPatch:
         logger.info("[isolate] 提取 Figure: %d 个", len(figure_dict))
 
     # ===== Phase 2: 提取 Block 公式 =====
-    block_matches = list(re.finditer(BLOCK_MATH_PATTERN, text, re.DOTALL))
+    block_matches = list(_BLOCK_TAG_PATTERN.finditer(text))
 
     if not block_matches:
         # Fallback — 尝试提取 $$...$$
         logger.warning("[isolate] 未找到 <block_math> 标签，启用 $$...$$ fallback")
         fallback_matches = list(re.finditer(FALLBACK_BLOCK_PATTERN, text, re.DOTALL))
+        match_count = len(fallback_matches)
         for idx, match in enumerate(reversed(fallback_matches), start=1):
             content = match.group(1).strip()
-            label = f"eq:auto_{idx}"
+            document_index = match_count - idx + 1
+            label = f"eq:auto_{document_index}"
             placeholder = f"{BLOCK_PLACEHOLDER_PREFIX}{idx}{BLOCK_PLACEHOLDER_SUFFIX}"
             formula_dict[placeholder] = {"label": label, "content": content, "score": ""}
             text = text[:match.start()] + f"\n{placeholder}\n" + text[match.end():]
         logger.info("[isolate] Fallback 提取 Block 公式: %d 个", len(formula_dict))
     else:
+        match_count = len(block_matches)
         for idx, match in enumerate(reversed(block_matches), start=1):
-            label = match.group(1).strip()
-            score = match.group(2) or ""
-            content = match.group(3).strip()
+            label, score = _parse_block_attrs(match.group("attrs"))
+            if not label:
+                document_index = match_count - idx + 1
+                label = f"eq:auto_{document_index}"
+            content = match.group("content").strip()
             placeholder = f"{BLOCK_PLACEHOLDER_PREFIX}{idx}{BLOCK_PLACEHOLDER_SUFFIX}"
             formula_dict[placeholder] = {"label": label, "content": content, "score": score}
             text = text[:match.start()] + f"\n{placeholder}\n" + text[match.end():]

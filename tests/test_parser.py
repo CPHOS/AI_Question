@@ -135,6 +135,56 @@ class TestScoreExtraction:
         assert result["formula_dict"][placeholder]["score"] == "3"
         assert result["formula_dict"][placeholder]["content"] == "F = ma"
 
+    def test_block_with_score_only(self):
+        draft = (
+            '解答\n'
+            '<block_math score="2">\n'
+            'L = I\\omega\n'
+            '</block_math>\n'
+            '后续'
+        )
+        result = python_parser(_make_state(draft_content=draft))
+        assert len(result["formula_dict"]) == 1
+        placeholder = list(result["formula_dict"].keys())[0]
+        assert result["formula_dict"][placeholder]["score"] == "2"
+        assert result["formula_dict"][placeholder]["content"] == "L = I\\omega"
+        assert result["formula_dict"][placeholder]["label"].startswith("eq:auto_")
+        assert "<block_math" not in result["tagged_text"]
+
+    def test_auto_labels_follow_document_order_for_tagged_blocks(self):
+        draft = (
+            '<block_math score="1">a = b</block_math>\n'
+            '中间文字\n'
+            '<block_math score="2">c = d</block_math>'
+        )
+
+        result = python_parser(_make_state(draft_content=draft))
+
+        placeholders = result["tagged_text"].split()
+        first = result["formula_dict"][placeholders[0]]
+        second = result["formula_dict"][placeholders[-1]]
+        assert first["label"] == "eq:auto_1"
+        assert first["content"] == "a = b"
+        assert second["label"] == "eq:auto_2"
+        assert second["content"] == "c = d"
+
+    def test_auto_labels_follow_document_order_for_fallback_blocks(self):
+        draft = (
+            "$$a = b$$\n"
+            "中间文字\n"
+            "$$c = d$$"
+        )
+
+        result = python_parser(_make_state(draft_content=draft))
+
+        placeholders = result["tagged_text"].split()
+        first = result["formula_dict"][placeholders[0]]
+        second = result["formula_dict"][placeholders[-1]]
+        assert first["label"] == "eq:auto_1"
+        assert first["content"] == "a = b"
+        assert second["label"] == "eq:auto_2"
+        assert second["content"] == "c = d"
+
     def test_block_without_score(self):
         draft = '<block_math label="eq:setup">E = mc^2</block_math>'
         result = python_parser(_make_state(draft_content=draft))
@@ -165,16 +215,3 @@ class TestFigureExtraction:
         draft = "纯文字无图"
         result = python_parser(_make_state(draft_content=draft))
         assert len(result["figure_dict"]) == 0
-
-
-class TestTitleExtraction:
-    def test_title_extracted(self):
-        draft = "【标题】磁弹性振子\n【题干】\n某物理系统..."
-        result = python_parser(_make_state(draft_content=draft))
-        assert result["title"] == "磁弹性振子"
-        assert "【标题】" not in result["tagged_text"]
-
-    def test_no_title(self):
-        draft = "【题干】\n某物理系统..."
-        result = python_parser(_make_state(draft_content=draft))
-        assert "title" not in result

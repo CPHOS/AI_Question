@@ -45,6 +45,22 @@ class OpenAICompatibleClient(BaseLLMClient):
 
     def stream_chat(self, **kwargs) -> tuple[str, UsageInfo]:
         """流式聊天请求，返回 (完整文本, UsageInfo)。"""
+        from config.config import LLM_STREAMING
+
+        if not LLM_STREAMING:
+            kwargs.pop("stream", None)
+            kwargs.pop("stream_options", None)
+            response = self._client.chat.completions.create(**kwargs)
+            usage = response.usage
+            message = response.choices[0].message
+            content = message.content or ""
+            info = UsageInfo(
+                prompt_tokens=usage.prompt_tokens if usage else 0,
+                completion_tokens=usage.completion_tokens if usage else 0,
+                total_tokens=usage.total_tokens if usage else 0,
+            )
+            return content, info
+
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
         response = self._client.chat.completions.create(**kwargs)

@@ -111,7 +111,7 @@ def _build_relabel_messages(
 
 
 def arbiter_agent(data: WorkflowData) -> ArbitrationOutput:
-    """仲裁节点：综合三份审核意见，输出结构化裁决。
+    """仲裁节点：综合四路审核意见，输出结构化裁决。
 
     返回完整的 `ArbitrationOutput`（decision / reason / feedback /
     error_category 以及更新后的三个 retry 计数器），由状态机合并。
@@ -126,7 +126,8 @@ def arbiter_agent(data: WorkflowData) -> ArbitrationOutput:
             draft_content=data["draft_content"],
             math_review=data["math_review"],
             physics_review=data["physics_review"],
-            structure_review=data.get("structure_review", ""))},
+            structure_review=data.get("structure_review", ""),
+            quality_review=data.get("quality_review", ""))},
     ]
 
     elapsed = 0.0
