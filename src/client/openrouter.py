@@ -35,18 +35,29 @@ class OpenRouterClient(OpenAICompatibleClient):
     @classmethod
     def from_config(cls) -> "OpenRouterClient":
         """从 .env 配置构造（OPENROUTER_API_KEY）。"""
-        from config.config import OPENROUTER_API_KEY, MODEL_TIMEOUT, LLM_MAX_RETRIES
+        from config.config import SEED_OPENROUTER_API_KEY, SEED_MODEL_TIMEOUT, SEED_LLM_MAX_RETRIES
 
-        if not OPENROUTER_API_KEY:
+        if not SEED_OPENROUTER_API_KEY:
             raise ValueError(
                 "使用 openrouter 提供商但 OPENROUTER_API_KEY 未设置。\n"
                 "  修复方法: 在 .env 中设置 OPENROUTER_API_KEY=<OPENROUTER_API_KEY>"
             )
         return cls(
-            api_key=OPENROUTER_API_KEY,
-            timeout=MODEL_TIMEOUT,
-            max_retries=LLM_MAX_RETRIES,
+            api_key=SEED_OPENROUTER_API_KEY,
+            timeout=SEED_MODEL_TIMEOUT,
+            max_retries=SEED_LLM_MAX_RETRIES,
         )
+
+    @classmethod
+    def from_settings(cls, *, api_key: str, base_url: str = "",
+                      timeout: int = 600, max_retries: int = 3) -> "OpenRouterClient":
+        """从已解析的设置记录构造（``base_url`` 对 OpenRouter 固定，忽略入参）。"""
+        if not api_key:
+            raise ValueError(
+                "openrouter 服务商缺少 api_key。\n"
+                "  修复: 通过管理员 API 配置该服务商的 API Key。"
+            )
+        return cls(api_key=api_key, timeout=timeout, max_retries=max_retries)
 
 
 def query_openrouter_credits(api_key: str, timeout: int = 30) -> dict:
@@ -59,7 +70,7 @@ def query_openrouter_credits(api_key: str, timeout: int = 30) -> dict:
         raise RuntimeError("OPENROUTER_API_KEY 未设置，无法查询 OpenRouter 额度")
 
     req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/credits",
+        f"{OpenRouterClient._BASE_URL}/credits",
         headers={"Authorization": f"Bearer {api_key}"},
         method="GET",
     )

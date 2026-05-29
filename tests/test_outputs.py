@@ -1,20 +1,23 @@
 import os
 import subprocess
 
-from app import _append_test_log
 from app.outputs import (
+    BuildStep,
+    LocalCompiler,
+    RemoteCompiler,
     _build_texinputs,
     _build_tikz_stub,
+    _get_compiler,
     _resolve_template_dir,
     _run_latex_compile,
     _rewrite_figure_asset_paths,
+    recompile_outputs,
     write_outputs,
 )
-from model.stats import clear, record
 
 
 def test_write_outputs_creates_tikz_stub(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.outputs.AUTO_COMPILE_FIGURES", False)
+    monkeypatch.setattr("config.runtime.auto_compile_figures", lambda: False)
     state = {
         "figure_descriptions": {
             "fig_1": {
@@ -58,8 +61,8 @@ def test_build_tikz_stub_uses_lc_cell_for_t_model():
 
 
 def test_write_outputs_rewrites_figure_asset_path(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.outputs.AUTO_COMPILE_FIGURES", False)
-    monkeypatch.setattr("app.outputs.AUTO_COMPILE_LATEX", False)
+    monkeypatch.setattr("config.runtime.auto_compile_figures", lambda: False)
+    monkeypatch.setattr("config.runtime.auto_compile_latex", lambda: False)
     state = {
         "final_latex": (
             "\\begin{problem}[10]{测试}\n"
@@ -90,8 +93,8 @@ def test_write_outputs_rewrites_figure_asset_path(tmp_path, monkeypatch):
 
 
 def test_write_outputs_rewrites_figure_asset_path_when_pdf_exists(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.outputs.AUTO_COMPILE_FIGURES", False)
-    monkeypatch.setattr("app.outputs.AUTO_COMPILE_LATEX", False)
+    monkeypatch.setattr("config.runtime.auto_compile_figures", lambda: False)
+    monkeypatch.setattr("config.runtime.auto_compile_latex", lambda: False)
     state = {
         "final_latex": (
             "\\begin{problem}[10]{测试}\n"
@@ -181,28 +184,126 @@ def test_run_latex_compile_reports_start_failure(tmp_path, monkeypatch):
     assert "denied" in detail
 
 
-def test_append_test_log_includes_quality_check_node(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.PROJECT_ROOT", tmp_path)
-    clear()
-    record("math_check", 10, 1.0, prompt_tokens=1, completion_tokens=2, total_tokens=3)
-    record("physics_check", 11, 1.0, prompt_tokens=1, completion_tokens=2, total_tokens=3)
-    record("quality_check", 12, 1.0, prompt_tokens=1, completion_tokens=2, total_tokens=3)
+def test_get_compiler_selects_backend(monkeypatch):
+    monkeypatch.setattr("config.runtime.latex_compiler_backend", lambda: "local")
+    assert isinstance(_get_compiler(), LocalCompiler)
+    monkeypatch.setattr("config.runtime.latex_compiler_backend", lambda: "remote")
+    assert isinstance(_get_compiler(), RemoteCompiler)
 
-    try:
-        _append_test_log(
-            topic="topic",
-            difficulty="medium",
-            model="model",
-            max_tokens=100,
-            total_elapsed=1.0,
-            final_state={},
-            error_msg="",
-        )
-    finally:
-        clear()
 
-    text = (tmp_path / "TEST_LOG.md").read_text(encoding="utf-8")
+def test_local_compiler_returns_produced_pdf(tmp_path, monkeypatch):
+    tex = tmp_path / "fig1.tex"
+    tex.write_text("x", encoding="utf-8")
 
-    assert "- math_check: 10 字符" in text
-    assert "- physics_check: 11 字符" in text
-    assert "- quality_check: 12 字符" in text
+    def _fake_compile(path, *, cphos_template_dir="", timeout=None):
+        path.with_suffix(".pdf").write_bytes(b"%PDF")
+        return True, "ok"
+
+    monkeypatch.setattr("app.outputs._run_latex_compile", _fake_compile)
+    results = LocalCompiler().compile_many(tmp_path, [BuildStep("fig1", "fig1.tex", 1)])
+
+    assert results["fig1"].ok is True
+    assert results["fig1"].produced == ("fig1.pdf",)
+
+
+def test_local_compiler_passes_count(tmp_path, monkeypatch):
+    tex = tmp_path / "doc.tex"
+    tex.write_text("x", encoding="utf-8")
+    calls = {"n": 0}
+
+    def _fake_compile(path, *, cphos_template_dir="", timeout=None):
+        calls["n"] += 1
+        path.with_suffix(".pdf").write_bytes(b"%PDF")
+        return True, "ok"
+
+    monkeypatch.setattr("app.outputs._run_latex_compile", _fake_compile)
+    LocalCompiler().compile_many(tmp_path, [BuildStep("final", "doc.tex", 2)])
+
+    assert calls["n"] == 2
+
+
+def test_local_compiler_stops_on_failure(tmp_path, monkeypatch):
+    tex = tmp_path / "doc.tex"
+    tex.write_text("x", encoding="utf-8")
+    calls = {"n": 0}
+
+    def _fake_compile(path, *, cphos_template_dir="", timeout=None):
+        calls["n"] += 1
+        return False, "err"
+
+    monkeypatch.setattr("app.outputs._run_latex_compile", _fake_compile)
+    results = LocalCompiler().compile_many(tmp_path, [BuildStep("final", "doc.tex", 2)])
+
+    assert calls["n"] == 1  # 第一遍失败即停止
+    assert results["final"].ok is False
+    assert results["final"].produced == ()
+
+
+def test_remote_backend_never_calls_subprocess(tmp_path, monkeypatch):
+    """backend=remote 时编译完全走 RemoteCompiler，不触本机 subprocess。"""
+    monkeypatch.setattr("config.runtime.latex_compiler_backend", lambda: "remote")
+    monkeypatch.setattr("config.runtime.auto_compile_figures", lambda: True)
+    monkeypatch.setattr("config.runtime.auto_compile_latex", lambda: True)
+
+    def _boom(*a, **k):
+        raise AssertionError("subprocess.run 不应被调用")
+
+    monkeypatch.setattr("app.outputs.subprocess.run", _boom)
+
+    captured = {}
+
+    def _fake_compile_many(self, workspace, steps, *, assets=(), template_dir="", timeout=None):
+        captured.setdefault("steps", []).extend(s.id for s in steps)
+        return {s.id: __import__("app.outputs", fromlist=["StepResult"]).StepResult(s.id, False, "stub") for s in steps}
+
+    monkeypatch.setattr("app.outputs.RemoteCompiler.compile_many", _fake_compile_many)
+
+    state = {
+        "final_latex": "\\begin{problem}[10]{t}\\begin{problemstatement}\\subq{1}a\\end{problemstatement}\\begin{solution}\\solsubq{1}{10}b\\scoring\\end{solution}\\end{problem}",
+        "figure_descriptions": {
+            "fig_1": {"filename": "fig1.pdf", "tikz_filename": "fig1.tex", "caption": "c", "description": "d"},
+        },
+    }
+
+    write_outputs("taskx", state, tmp_path)
+
+    assert "fig_1" in captured["steps"]
+    assert "final" in captured["steps"]
+
+
+def test_recompile_outputs_missing_final_raises(tmp_path):
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        recompile_outputs("task", tmp_path)
+
+
+def test_recompile_outputs_compiles_figures_and_final(tmp_path, monkeypatch):
+    # 准备磁盘产物：final tex + 一个图片 stub + 既有 log.json
+    (tmp_path / "task_final.tex").write_text("\\documentclass{article}", encoding="utf-8")
+    assets = tmp_path / "task_assets"
+    assets.mkdir()
+    (assets / "fig1.tex").write_text("\\documentclass{standalone}", encoding="utf-8")
+    (tmp_path / "task_log.json").write_text(
+        '{"latex_compile_status": {}, "figure_compile_status": {}}', encoding="utf-8"
+    )
+
+    def _fake_compile(path, *, cphos_template_dir="", timeout=None):
+        path.with_suffix(".pdf").write_bytes(b"%PDF")
+        return True, "ok"
+
+    monkeypatch.setattr("config.runtime.latex_compiler_backend", lambda: "local")
+    monkeypatch.setattr("app.outputs._run_latex_compile", _fake_compile)
+
+    status = recompile_outputs("task", tmp_path)
+
+    assert status["latex_compile_status"]["ok"] is True
+    assert status["figure_compile_status"]["fig1"]["ok"] is True
+    assert (tmp_path / "task_final.pdf").exists()
+    assert (assets / "fig1.pdf").exists()
+
+    # log.json 的编译状态被回写
+    import json
+    log = json.loads((tmp_path / "task_log.json").read_text(encoding="utf-8"))
+    assert log["latex_compile_status"]["ok"] is True
+    assert log["figure_compile_status"]["fig1"]["ok"] is True

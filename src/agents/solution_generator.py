@@ -11,10 +11,9 @@ import time
 
 from model.state import WorkflowData, GenerationPatch
 from model.stats import record
-from client import get_client, stream_chat
-from config.config import (
-    BIG_MODEL_NAME, BIG_MODEL_TEMPERATURE, BIG_MODEL_MAX_TOKENS, logger,
-)
+from client import stream_chat
+from config.config import logger
+from config.runtime import build_client
 from prompts import load
 from utils.retry_context import build_solution_retry_context
 
@@ -31,7 +30,7 @@ def solution_generator_agent(data: WorkflowData) -> GenerationPatch:
     retry = data.get("solution_retry_count", 0)
     logger.info("[solution_gen] 进入解题生成节点 | retry=%d", retry)
 
-    client = get_client()
+    client, m = build_client("solution_generator")
 
     system_prompt = load("solution_generator", "system_prompt",
                          total_score=str(data["total_score"]))
@@ -57,10 +56,11 @@ def solution_generator_agent(data: WorkflowData) -> GenerationPatch:
     logger.info("[solution_gen] 正在等待 thinking model...")
     t0 = time.time()
     content, usage = stream_chat(
-        client, model=BIG_MODEL_NAME,
+        client, model=m.model,
         messages=messages,
-        temperature=BIG_MODEL_TEMPERATURE,
-        max_tokens=BIG_MODEL_MAX_TOKENS,
+        temperature=m.temperature,
+        max_tokens=m.max_tokens,
+        stream=m.streaming,
     )
     elapsed = time.time() - t0
     logger.info(

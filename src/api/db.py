@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     phase        TEXT NOT NULL DEFAULT '',
     mode         TEXT NOT NULL DEFAULT '',
     topic        TEXT NOT NULL DEFAULT '',
+    difficulty   TEXT NOT NULL DEFAULT '',
+    source_material TEXT NOT NULL DEFAULT '',
     total_score  INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL,
     finished_at  TEXT,
@@ -65,6 +67,48 @@ CREATE TABLE IF NOT EXISTS task_events (
     FOREIGN KEY (task_id) REFERENCES tasks (task_id)
 );
 CREATE INDEX IF NOT EXISTS idx_events_task ON task_events (task_id, seq);
+
+-- ===== LLM 服务商凭据（机密入库，API 读取时掩码） =====
+CREATE TABLE IF NOT EXISTS llm_providers (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    kind        TEXT NOT NULL,
+    api_key     TEXT NOT NULL DEFAULT '',
+    base_url    TEXT NOT NULL DEFAULT '',
+    timeout     INTEGER NOT NULL DEFAULT 600,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+-- ===== 模型配置（「模型配置」实体，引用某个服务商凭据） =====
+CREATE TABLE IF NOT EXISTS model_configs (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    provider_id TEXT NOT NULL,
+    model       TEXT NOT NULL DEFAULT '',
+    temperature REAL NOT NULL DEFAULT 0.0,
+    max_tokens  INTEGER NOT NULL DEFAULT 4096,
+    streaming   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    FOREIGN KEY (provider_id) REFERENCES llm_providers (id)
+);
+
+-- ===== Agent 配置（每个 Agent 角色绑定到一个模型配置） =====
+CREATE TABLE IF NOT EXISTS agent_bindings (
+    role            TEXT PRIMARY KEY,
+    model_config_id TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY (model_config_id) REFERENCES model_configs (id)
+);
+
+-- ===== 运行期应用设置（流程开关 / 数值阈值） =====
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -77,6 +121,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
     if "phase" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN phase TEXT NOT NULL DEFAULT ''")
+    if "difficulty" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN difficulty TEXT NOT NULL DEFAULT ''")
+    if "source_material" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN source_material TEXT NOT NULL DEFAULT ''")
 
 
 def configure(db_path: Path) -> None:
@@ -87,6 +135,9 @@ def configure(db_path: Path) -> None:
             _conn.close()
             _conn = None
         _db_path = db_path
+    # 切换数据库后，运行期设置缓存与就绪标志必须失效，避免读到旧库的设置。
+    from config import runtime
+    runtime.invalidate_cache()
 
 
 def get_connection() -> sqlite3.Connection:
@@ -103,12 +154,15 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """幂等创建所有表与索引，并执行增量迁移。"""
+    """幂等创建所有表与索引，执行增量迁移，并播种默认 LLM / 应用设置。"""
     conn = get_connection()
     with _lock:
         conn.executescript(_SCHEMA)
         _migrate(conn)
         conn.commit()
+    # 首次初始化时，从 .env 种子默认值播种模型 / 服务商 / Agent 绑定 / 应用设置。
+    from api import settings_store
+    settings_store.seed_defaults()
     logger.info("[db] 数据库已就绪: %s", _db_path)
 
 

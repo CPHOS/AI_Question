@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from api import store
+from api.errors import (
+    ApiError, CODE_UNAUTHORIZED, CODE_FORBIDDEN,
+)
 
 _bearer = HTTPBearer(auto_error=False, description="不透明 token，形如 `Bearer <token>`")
 
@@ -35,16 +38,18 @@ def require_user(
 ) -> Identity:
     """解析并校验 token，返回调用者身份；失败抛 401。"""
     if credentials is None or not credentials.credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="缺少 Bearer token",
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED,
+            CODE_UNAUTHORIZED,
+            "缺少 Bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
     record = store.resolve_token(credentials.credentials)
     if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="token 无效或已吊销",
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED,
+            CODE_UNAUTHORIZED,
+            "token 无效或已吊销",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return Identity(user_id=record["user_id"], role=record["role"], token_id=record["id"])
@@ -53,8 +58,9 @@ def require_user(
 def require_admin(identity: Identity = Depends(require_user)) -> Identity:
     """要求管理员身份；非管理员抛 403。"""
     if not identity.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="需要管理员权限",
+        raise ApiError(
+            status.HTTP_403_FORBIDDEN,
+            CODE_FORBIDDEN,
+            "需要管理员权限",
         )
     return identity

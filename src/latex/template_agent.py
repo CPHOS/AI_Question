@@ -12,6 +12,7 @@ import re
 
 from model.state import WorkflowData, LaTeXPatch
 from config.config import logger
+from latex.template_spec import DOCUMENTCLASS
 
 
 _EQTAG_SCORE_RE = re.compile(r'\\eqtagscore\{[^}]+\}\{\d+\}')
@@ -159,7 +160,7 @@ def _auto_fix(latex: str, issues: list[str]) -> tuple[str, list[str]]:
 
     # 补全 documentclass
     if "缺少 \\documentclass 声明" in issues:
-        latex = "\\documentclass[answer]{cphos}\n\n\\begin{document}\n" + latex
+        latex = DOCUMENTCLASS + "\n\n\\begin{document}\n" + latex
         if "\\end{document}" not in latex:
             latex += "\n\\end{document}\n"
         fixes.append("补全 \\documentclass 和 document 环境")

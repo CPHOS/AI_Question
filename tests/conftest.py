@@ -28,7 +28,7 @@ def fake_execute(monkeypatch):
     """用假执行替换 app.runner.execute_task（jobs 内引用）。"""
     from app.runner import RunResult
 
-    def _fake(initial_state, task_id, output_dir, write=True, on_phase=None):
+    def _fake(initial_state, task_id, output_dir, write=True, on_phase=None, should_cancel=None):
         output_dir.mkdir(parents=True, exist_ok=True)
         final_state = dict(initial_state)
         final_state.update({

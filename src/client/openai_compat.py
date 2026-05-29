@@ -29,25 +29,41 @@ class OpenAICompatibleClient(BaseLLMClient):
     @classmethod
     def from_config(cls) -> "OpenAICompatibleClient":
         """从 .env 配置构造（LLM_API_KEY + LLM_BASE_URL）。"""
-        from config.config import LLM_API_KEY, LLM_BASE_URL, MODEL_TIMEOUT, LLM_MAX_RETRIES
+        from config.config import (
+            SEED_LLM_API_KEY, SEED_LLM_BASE_URL, SEED_MODEL_TIMEOUT, SEED_LLM_MAX_RETRIES,
+        )
 
-        if not LLM_API_KEY or not LLM_BASE_URL:
+        if not SEED_LLM_API_KEY or not SEED_LLM_BASE_URL:
             raise ValueError(
                 "使用 openai_compatible 提供商但 LLM_API_KEY 或 LLM_BASE_URL 未设置。\n"
                 "  修复方法: 在 .env 中设置 LLM_API_KEY 和 LLM_BASE_URL"
             )
         return cls(
-            api_key=LLM_API_KEY,
-            base_url=LLM_BASE_URL,
-            timeout=MODEL_TIMEOUT,
-            max_retries=LLM_MAX_RETRIES,
+            api_key=SEED_LLM_API_KEY,
+            base_url=SEED_LLM_BASE_URL,
+            timeout=SEED_MODEL_TIMEOUT,
+            max_retries=SEED_LLM_MAX_RETRIES,
         )
 
-    def stream_chat(self, **kwargs) -> tuple[str, UsageInfo]:
-        """流式聊天请求，返回 (完整文本, UsageInfo)。"""
-        from config.config import LLM_STREAMING
+    @classmethod
+    def from_settings(cls, *, api_key: str, base_url: str,
+                      timeout: int = 600, max_retries: int = 3) -> "OpenAICompatibleClient":
+        """从已解析的设置记录构造（供 :mod:`config.runtime` 使用）。"""
+        if not api_key or not base_url:
+            raise ValueError(
+                "openai_compatible 服务商缺少 api_key 或 base_url。\n"
+                "  修复: 通过管理员 API 配置该服务商的凭据。"
+            )
+        return cls(api_key=api_key, base_url=base_url,
+                   timeout=timeout, max_retries=max_retries)
 
-        if not LLM_STREAMING:
+    def stream_chat(self, **kwargs) -> tuple[str, UsageInfo]:
+        """流式聊天请求，返回 (完整文本, UsageInfo)。
+
+        是否流式由显式的 ``stream`` kwarg 决定（来自已解析的模型配置）；
+        缺省为非流式。
+        """
+        if not kwargs.pop("stream", False):
             kwargs.pop("stream", None)
             kwargs.pop("stream_options", None)
             response = self._client.chat.completions.create(**kwargs)

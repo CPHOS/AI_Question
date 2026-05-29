@@ -23,11 +23,24 @@ from enum import Enum, auto
 from typing import Callable, Optional
 
 from model.state import WorkflowData
-from config.config import MAX_RETRY_COUNT, logger
+from model.schema import (
+    ARBITER_DECISIONS,
+    PASS_ERROR_CATEGORIES,
+    DECISION_PASS_WITH_EDITS,
+)
+from config.config import logger
+from config import runtime
 
 # 进度回调签名：(phase_name, status, data) -> None
 # status 取值 "running"（进入阶段）/ "completed"（阶段产出就绪）。
 PhaseCallback = Callable[[str, str, WorkflowData], None]
+
+# 取消检查回调：返回 True 表示已请求取消，应在下一个阶段边界尽快停止。
+CancelCheck = Callable[[], bool]
+
+
+class TaskCancelled(Exception):
+    """协作式取消信号：在阶段边界检测到取消请求时抛出。"""
 
 
 class Phase(Enum):
@@ -45,10 +58,6 @@ class Phase(Enum):
     ERROR = auto()
 
 
-# 合法仲裁决策
-_VALID_DECISIONS = ("PASS", "RETRY_PROBLEM", "RETRY_SOLUTION", "ABORT")
-
-
 class GenerationStateMachine:
     """驱动命题生成工作流的状态机。"""
 
@@ -56,6 +65,7 @@ class GenerationStateMachine:
         self._phase: Phase = Phase.INIT
         self._start_time: float = 0.0
         self._on_phase: Optional[PhaseCallback] = None
+        self._should_cancel: Optional[CancelCheck] = None
 
     @property
     def phase(self) -> Phase:
@@ -76,9 +86,23 @@ class GenerationStateMachine:
             logger.warning("[workflow] 进度回调异常，已忽略", exc_info=True)
 
     def _enter(self, phase: Phase, data: WorkflowData) -> None:
-        """进入某阶段：转移 + 发出 running 事件。"""
+        """进入某阶段：检查取消 → 转移 + 发出 running 事件。"""
+        self._check_cancel()
         self._transition(phase)
         self._emit(phase, "running", data)
+
+    def _check_cancel(self) -> None:
+        """在阶段边界检查取消请求；已请求则抛 :class:`TaskCancelled`。"""
+        if self._should_cancel is None:
+            return
+        try:
+            cancelled = bool(self._should_cancel())
+        except Exception:  # noqa: BLE001 - 取消检查异常不应误杀任务
+            logger.warning("[workflow] 取消检查回调异常，已忽略", exc_info=True)
+            return
+        if cancelled:
+            logger.info("[workflow] 检测到取消请求，停止于阶段边界")
+            raise TaskCancelled()
 
     def _done(self, phase: Phase, data: WorkflowData) -> None:
         """某阶段产出就绪：发出 completed 事件。"""
@@ -107,22 +131,23 @@ class GenerationStateMachine:
         sol_retry = data.get("solution_retry_count", 0)
         total_retry = data.get("retry_count", prob_retry + sol_retry)
         error_cat = data.get("error_category", "fatal")
+        max_retry = runtime.max_retry_count()
 
         # 入口日志：一行覆盖全部决策上下文
         logger.info(
             "[router] decision=%s | error_category=%s | retry: problem=%d/%d solution=%d/%d total=%d/%d",
             decision, error_cat,
-            prob_retry, MAX_RETRY_COUNT,
-            sol_retry, MAX_RETRY_COUNT,
-            total_retry, 2 * MAX_RETRY_COUNT,
+            prob_retry, max_retry,
+            sol_retry, max_retry,
+            total_retry, 2 * max_retry,
         )
 
-        if decision not in _VALID_DECISIONS:
+        if decision not in ARBITER_DECISIONS:
             logger.warning("[router] 未识别 decision=%r，强制终止", decision)
             return "end"
 
         invalid_combo = (
-            (decision == "PASS" and error_cat not in ("none", "style"))
+            (decision == "PASS" and error_cat not in PASS_ERROR_CATEGORIES)
             or (
                 decision in ("RETRY_PROBLEM", "RETRY_SOLUTION", "ABORT")
                 and error_cat != "fatal"
@@ -148,11 +173,11 @@ class GenerationStateMachine:
 
         # 当前阶段是否已达上限
         stage_exhausted = (
-            (decision == "RETRY_PROBLEM" and prob_retry >= MAX_RETRY_COUNT)
-            or (decision == "RETRY_SOLUTION" and sol_retry >= MAX_RETRY_COUNT)
+            (decision == "RETRY_PROBLEM" and prob_retry >= max_retry)
+            or (decision == "RETRY_SOLUTION" and sol_retry >= max_retry)
         )
         # 总次数硬熔断，防止两阶段交替重试无限循环
-        total_exhausted = total_retry >= 2 * MAX_RETRY_COUNT
+        total_exhausted = total_retry >= 2 * max_retry
 
         if stage_exhausted or total_exhausted:
             cap_reason = (
@@ -177,7 +202,8 @@ class GenerationStateMachine:
     # 主流程
     # ------------------------------------------------------------------
 
-    def run(self, data: WorkflowData, on_phase: Optional[PhaseCallback] = None) -> WorkflowData:
+    def run(self, data: WorkflowData, on_phase: Optional[PhaseCallback] = None,
+            should_cancel: Optional[CancelCheck] = None) -> WorkflowData:
         """驱动完整的生成工作流。
 
         Args:
@@ -185,6 +211,8 @@ class GenerationStateMachine:
             on_phase: 可选的进度回调，在每个阶段进入（``running``）与产出就绪
                 （``completed``）时被调用，用于上报节点级进度。回调内部异常会
                 被吞掉，不影响生成流程。
+            should_cancel: 可选的取消检查回调，在每个阶段边界被调用；返回
+                ``True`` 时工作流抛出 :class:`TaskCancelled` 并转入 ``ABORTED``。
         """
         from spec.planner import run_planning
         from agents.problem_generator import problem_generator_agent
@@ -197,6 +225,7 @@ class GenerationStateMachine:
         from latex.template_agent import fix_template
 
         self._on_phase = on_phase
+        self._should_cancel = should_cancel
         self._start_time = time.monotonic()
         data = dict(data)  # 允许修改
 
@@ -242,7 +271,7 @@ class GenerationStateMachine:
 
                 if route in ("pass", "pass_with_edits"):
                     if route == "pass_with_edits":
-                        data["arbiter_decision"] = "PASS_WITH_EDITS"
+                        data["arbiter_decision"] = DECISION_PASS_WITH_EDITS
                     break
                 elif route == "abort":
                     self._transition(Phase.ABORTED)
@@ -273,6 +302,13 @@ class GenerationStateMachine:
             elapsed = time.monotonic() - self._start_time
             logger.info("生成完成，总耗时 %.2f 秒", elapsed)
             return data
+
+        except TaskCancelled:
+            self._transition(Phase.ABORTED)
+            self._emit(Phase.ABORTED, "completed", data)
+            elapsed = time.monotonic() - self._start_time
+            logger.info("生成流程被取消 (已耗时 %.2f 秒)", elapsed)
+            raise
 
         except Exception:
             self._transition(Phase.ERROR)

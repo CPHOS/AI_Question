@@ -13,9 +13,9 @@ tests/
 ├── test_format.py          # 格式化输出清理与占位符保护
 ├── test_outputs.py         # 输出资产写入，含 TikZ 草稿
 ├── test_retry_context.py   # 重试上下文结构化
-├── test_source_loader.py   # 源材料读取、PDF 文本提取和长度裁剪
 ├── test_template_agent.py  # CPHOS 模板契约检查与自动修正
 ├── test_title.py           # 标题解析工具
+├── test_settings.py        # LLM 设置仓储与管理路由
 ├── topics.py               # 测试主题数据加载辅助
 └── fixtures/
     └── topics.js           # 主题池数据
@@ -47,9 +47,9 @@ PYTHONPATH=src python -m pytest tests/test_merger.py -q
 PYTHONPATH=src python -m pytest tests/test_format.py -q
 PYTHONPATH=src python -m pytest tests/test_outputs.py -q
 PYTHONPATH=src python -m pytest tests/test_retry_context.py -q
-PYTHONPATH=src python -m pytest tests/test_source_loader.py -q
 PYTHONPATH=src python -m pytest tests/test_template_agent.py -q
 PYTHONPATH=src python -m pytest tests/test_title.py -q
+PYTHONPATH=src python -m pytest tests/test_settings.py -q
 ```
 
 带详细测试名输出：
@@ -75,15 +75,15 @@ python -m compileall src tests
 | `test_format.py` | 小模型格式化结果清理、占位符花括号保护、代码块剥离 |
 | `test_outputs.py` | assets 目录、figure 说明文件、TikZ 草稿写入 |
 | `test_retry_context.py` | 命题重试、解题重试的结构化上下文 |
-| `test_source_loader.py` | txt/tex/md/PDF 源材料读取、PDF fallback、材料长度裁剪 |
 | `test_template_agent.py` | AI Reviewer 契约、Markdown 残留、外置图、评分点和层级一致性 |
 | `test_title.py` | 多种标题格式解析与 isolate 集成 |
+| `test_settings.py` | LLM 设置仓储（服务商/模型/绑定/应用设置）与管理路由 |
 
 ## Mock 使用方式
 
 LLM 调用测试不依赖真实 API。状态机集成测试通过 `unittest.mock.patch` 替换：
 
-- `get_client`
+- `build_client`
 - `stream_chat`
 - 仲裁模型 `create`
 

@@ -120,8 +120,8 @@ INIT -> PLANNING -> PROBLEM_GENERATING -> SOLUTION_GENERATING
 
 ## 后端 API
 
-`src/api` 提供基于 FastAPI 的多用户后端，复用 `app.runner.execute_task` 这一与 CLI
-共用的执行入口。
+`src/api` 提供基于 FastAPI 的多用户后端，是系统唯一的对外入口；任务执行统一通过
+`app.runner.execute_task` 完成。
 
 | 模块 | 职责 |
 | --- | --- |
@@ -150,6 +150,16 @@ INIT -> PLANNING -> PROBLEM_GENERATING -> SOLUTION_GENERATING
   与 jobs sink 均吞异常），进度上报失败绝不影响生成主流程。
 - **产物隔离**：产物按 `OUTPUT_DIR/{user_id}/{task_id}_*` 落盘；下载端点做归属校验
   与目录穿越防护。
+- **协作式取消**：`POST /api/tasks/{id}/cancel` 不强杀线程。`api.jobs` 为每个任务持有
+  一个 `threading.Event` 与运行中的 `Future`：排队未启动的任务直接 `future.cancel()`
+  并落 `aborted`；运行中的任务置 `aborting` 并 set event，状态机在每个**阶段边界**
+  检查 `should_cancel()`，命中则抛 `TaskCancelled`，由 runner 捕获后落 `aborted`。
+- **实时进度（SSE）**：`GET /api/tasks/{id}/events` 以 `text/event-stream` 推送阶段
+  事件（`event: phase`）与终态（`event: status`）。实现为对 `task_events` 表的异步
+  轮询生成器（间隔 `_SSE_POLL_INTERVAL`，上限 `_SSE_MAX_DURATION`），任务进入终态后
+  发送 `status` 事件并关闭连接；是轮询 `/progress` 的低延迟替代。
+- **跨域**：默认不启用 CORS（推荐 nginx 同源反代）。设置 `CORS_ALLOW_ORIGINS`
+  （逗号分隔来源）后 `api.app` 挂载 `CORSMiddleware`。
 - **文档自动生成**：运行时 `/docs`、`/redoc`、`/openapi.json` 实时暴露规范；
   `uv run physics-api-docs` 把同一份规范固化到 `docs/api`。
 
@@ -198,17 +208,32 @@ INIT -> PLANNING -> PROBLEM_GENERATING -> SOLUTION_GENERATING
 
 ## 配置项
 
+配置分两层：
+
+1. **可持久化设置（数据库）**：模型与服务商选择及其参数、流程开关等业务可调项，
+   存于 SQLite（`llm_providers` / `model_configs` / `agent_bindings` / `app_settings`
+   表），运行时只读数据库记录，仅通过管理员 API（`/api/admin/llm/*`）修改。模型配置
+   与 Agent 绑定**解耦**：一条「模型配置」描述「服务商 + 模型 + 采样参数」，每个 Agent
+   角色再各自绑定到某条模型配置，因此不同 Agent 可用不同模型甚至不同服务商。
+2. **部署 / 基础设施 / 机密（`.env`）**：始终通过环境变量管理。
+
+### 种子默认值（仅首次初始化时播种）
+
+下列变量**只在数据库首次初始化时**作为初始记录写入（`SEED_*`）；之后修改这些变量
+不再生效，请改用管理员 API。
+
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
-| `LLM_PROVIDER` | LLM provider 名称 | `openrouter` |
-| `OPENROUTER_API_KEY` | OpenRouter API key | 空 |
-| `LLM_API_KEY` | OpenAI 兼容接口 API key | 空 |
+| `LLM_PROVIDER` | 默认服务商类型（`openrouter` / `openai_compatible`） | `openrouter` |
+| `OPENROUTER_API_KEY` | OpenRouter API key（机密，入库存储；API 响应脱敏） | 空 |
+| `LLM_API_KEY` | OpenAI 兼容接口 API key（机密，同上） | 空 |
 | `LLM_BASE_URL` | OpenAI 兼容接口 base URL | 空 |
 | `BIG_MODEL_NAME` | 命题、解题、审核、仲裁使用的模型 | 空 |
 | `SMALL_MODEL_NAME` | LaTeX 格式化使用的模型 | 空 |
 | `BIG_MODEL_TEMPERATURE` | 大模型温度 | `0.7` |
 | `BIG_MODEL_MAX_TOKENS` | 大模型最大输出 token | `32768` |
 | `ARBITER_MAX_TOKENS` | 仲裁最大输出 token | `4096` |
+| `REVIEW_TEMPERATURE` | 审核 / 仲裁类 Agent 温度（确定性审核） | `0.0` |
 | `SMALL_MODEL_TEMPERATURE` | 小模型温度 | `0.0` |
 | `SMALL_MODEL_MAX_TOKENS` | 小模型最大输出 token | `8192` |
 | `MODEL_TIMEOUT` | SDK 请求超时时间，单位秒 | `600` |
@@ -216,16 +241,41 @@ INIT -> PLANNING -> PROBLEM_GENERATING -> SOLUTION_GENERATING
 | `LLM_STREAMING` | 是否使用流式模型响应；OpenRouter 长任务默认关闭以降低空闲超时风险 | `false` |
 | `MAX_RETRY_COUNT` | 单阶段最大重试次数 | `3` |
 | `SOURCE_MATERIAL_MAX_CHARS` | 文献、PDF、网页导入后的源材料截断上限 | `60000` |
-| `LATEX_ENGINE` | 本地 LaTeX 编译命令 | `xelatex` |
 | `AUTO_COMPILE_FIGURES` | 是否自动把生成的 `figN.tex` 编译为 `figN.pdf` | `true` |
 | `AUTO_COMPILE_LATEX` | 是否自动编译最终题目 LaTeX；CI 或无模板环境可关闭 | `false` |
+| `LATEX_COMPILE_TIMEOUT` | 单次 LaTeX / TikZ 编译子进程超时（秒） | `180` |
+| `LATEX_COMPILER_BACKEND` | LaTeX 编译后端：`local`（本机 subprocess）或 `remote`（独立编译服务，见 `docs/latex-service-protocol.md`） | `local` |
+| `LATEX_SERVICE_BASE_URL` | 远程编译服务根 URL（`LATEX_COMPILER_BACKEND=remote` 时必填） | （空） |
+| `LATEX_SERVICE_POLL_INTERVAL` | 远程编译作业状态轮询间隔（秒） | `2.0` |
+| `LATEX_SERVICE_MAX_WAIT` | 远程编译作业等待终态的客户端总截止（秒） | `1200.0` |
+| `SSE_POLL_INTERVAL` | SSE 进度推送轮询间隔，单位秒 | `1.0` |
+| `SSE_MAX_DURATION` | SSE 连接最长存活时间，单位秒 | `1800.0` |
+
+种子写入后，可通过以下管理端点查看 / 修改（均需管理员 token）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/POST | `/api/admin/llm/providers` | 列出 / 创建服务商凭据 |
+| GET/PATCH/DELETE | `/api/admin/llm/providers/{id}` | 查看 / 更新 / 删除服务商 |
+| GET/POST | `/api/admin/llm/models` | 列出 / 创建模型配置 |
+| GET/PATCH/DELETE | `/api/admin/llm/models/{id}` | 查看 / 更新 / 删除模型配置 |
+| GET | `/api/admin/llm/agents` | 列出 Agent → 模型配置绑定 |
+| PUT | `/api/admin/llm/agents/{role}` | 绑定某 Agent 到模型配置 |
+| GET/PATCH | `/api/admin/llm/settings` | 查看 / 更新运行期应用设置 |
+
+### 部署 / 基础设施（始终通过 `.env`）
+
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `LATEX_ENGINE` | 本地 LaTeX 编译命令 | `xelatex` |
 | `CPHOS_TEMPLATE_DIR` | `cphos.cls` 与配套样式所在目录；相对路径按项目根目录解析 | `../CPHOS-Latex/theory` |
 | `OUTPUT_DIR` | 输出目录 | `output` |
 | `API_HOST` | API 服务监听地址 | `0.0.0.0` |
 | `API_PORT` | API 服务端口 | `8000` |
 | `MAX_CONCURRENT_JOBS` | 同时执行的生成任务上限 | `1` |
-| `DB_PATH` | 用户 / token / 任务元数据 SQLite 路径（相对按项目根解析） | `data/api.db` |
+| `DB_PATH` | 用户 / token / 任务元数据 + LLM 设置的 SQLite 路径（相对按项目根解析） | `data/api.db` |
 | `ADMIN_BOOTSTRAP_TOKEN` | 引导管理员 token 明文（首次启动且无 admin 时写入哈希） | 空 |
+| `CORS_ALLOW_ORIGINS` | 跨域来源（逗号分隔）；留空不启用 CORS（推荐同源反代部署） | 空 |
 
 `.env.example` 是配置模板，开发环境中的 `.env` 不应提交到仓库。
 
@@ -241,7 +291,7 @@ AI_Question/
 |   |-- TESTING.md
 |   `-- api/                  # 后端 API 文档（README + 自动生成的 OpenAPI/ReDoc）
 |-- src/
-|   |-- app/                 # CLI、产物写盘（outputs）与共用执行入口（runner）
+|   |-- app/                 # 产物写盘（outputs）与任务执行入口（runner）
 |   |-- api/                 # FastAPI 后端：鉴权、持久化、任务执行、路由
 |   |-- agents/              # 命题、解题、审核、仲裁 Agent
 |   |-- client/              # LLM 客户端与 provider 注册
@@ -250,7 +300,7 @@ AI_Question/
 |   |-- latex/               # LaTeX 后处理
 |   |-- model/               # 状态类型、schema、统计
 |   |-- prompts/             # YAML 提示词
-|   |-- spec/                # 输入规格化与源材料加载
+|   |-- spec/                # 输入规格化（API 请求 → WorkflowData）
 |   `-- utils/               # 通用文本与重试上下文工具
 `-- tests/
     |-- test_api.py
@@ -263,7 +313,7 @@ AI_Question/
     |-- test_parser.py
     |-- test_retry_context.py
     |-- test_review_fixes.py
-    |-- test_source_loader.py
+    |-- test_settings.py
     |-- test_state_machine.py
     |-- test_template_agent.py
     |-- test_title.py

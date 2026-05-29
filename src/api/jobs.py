@@ -12,18 +12,30 @@
 """
 from __future__ import annotations
 
+import json
+import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Any
 
 from api import store
 from api import progress
 from app.runner import execute_task
+from app.outputs import ARTIFACT_SUFFIXES, ASSETS_DIR_SUFFIX, recompile_outputs
 from spec.normalizer import from_api
 from config.config import OUTPUT_DIR, MAX_CONCURRENT_JOBS, logger
 
 _executor: ThreadPoolExecutor | None = None
+
+# 取消协作：task_id → Event（置位表示已请求取消）；并保留 Future 以便取消排队中的任务。
+_cancels: dict[str, threading.Event] = {}
+_futures: dict[str, Future] = {}
+_registry_lock = threading.Lock()
+
+# 按需编译串行化：每任务一把锁，防止并发重编同一任务产物互相覆盖。
+_compile_locks: dict[str, threading.Lock] = {}
+_compile_registry_lock = threading.Lock()
 
 
 def start_executor() -> None:
@@ -44,6 +56,11 @@ def shutdown_executor() -> None:
         _executor.shutdown(wait=False, cancel_futures=True)
         _executor = None
         logger.info("[jobs] 执行器已关闭")
+
+
+def executor_running() -> bool:
+    """返回后台任务执行器是否处于运行态（供健康检查使用）。"""
+    return _executor is not None
 
 
 def user_output_dir(user_id: str) -> Path:
@@ -78,10 +95,50 @@ def submit_task(
         mode=initial_state.get("mode", ""),
         topic=initial_state.get("topic", ""),
         total_score=initial_state.get("total_score", 0),
+        difficulty=initial_state.get("difficulty", ""),
+        source_material=initial_state.get("source_material", ""),
     )
-    _executor.submit(_run_job, task_id, user_id, initial_state)
+    event = threading.Event()
+    with _registry_lock:
+        _cancels[task_id] = event
+    future = _executor.submit(_run_job, task_id, user_id, initial_state)
+    with _registry_lock:
+        _futures[task_id] = future
     logger.info("[jobs] 任务已提交 task_id=%s user=%s", task_id, user_id)
     return task_id
+
+
+def _discard_registry(task_id: str) -> None:
+    """清理某任务的取消事件与 Future 引用（任务终结时调用）。"""
+    with _registry_lock:
+        _cancels.pop(task_id, None)
+        _futures.pop(task_id, None)
+
+
+def cancel_task(task_id: str) -> str:
+    """协作式取消一个任务。
+
+    - 若任务仍在队列中未启动，``Future.cancel()`` 成功 → 直接标记 ``aborted``；
+    - 若任务正在运行，置位取消事件并把状态置为 ``aborting``，工作流会在下一个
+      阶段边界停止并最终落为 ``aborted``。
+
+    Returns:
+        ``"aborted"``（已立即终止）或 ``"aborting"``（正在停止）。
+    """
+    with _registry_lock:
+        event = _cancels.get(task_id)
+        future = _futures.get(task_id)
+    if event is not None:
+        event.set()
+    if future is not None and future.cancel():
+        # 任务尚未开始执行，已从队列移除。
+        store.finish_task(task_id, "aborted", summary={}, error="")
+        _discard_registry(task_id)
+        logger.info("[jobs] 任务在排队中被取消 task_id=%s", task_id)
+        return "aborted"
+    store.set_task_status(task_id, "aborting")
+    logger.info("[jobs] 已请求取消运行中任务 task_id=%s", task_id)
+    return "aborting"
 
 
 def _make_progress_sink(task_id: str):
@@ -107,15 +164,32 @@ def _make_progress_sink(task_id: str):
 
 def _run_job(task_id: str, user_id: str, initial_state: dict[str, Any]) -> None:
     """线程池工作函数：执行任务并落库结果。"""
+    with _registry_lock:
+        event = _cancels.get(task_id)
+    # 启动前已请求取消：直接落为 aborted，不进入生成流程。
+    if event is not None and event.is_set():
+        store.finish_task(task_id, "aborted", summary={}, error="")
+        _discard_registry(task_id)
+        logger.info("[jobs] 任务启动前已取消 task_id=%s", task_id)
+        return
+
     store.set_task_status(task_id, "running")
     try:
         result = execute_task(
             initial_state, task_id, user_output_dir(user_id),
             on_phase=_make_progress_sink(task_id),
+            should_cancel=(event.is_set if event is not None else None),
         )
     except Exception as exc:  # noqa: BLE001 - 兜底，保证状态被更新
         logger.exception("[jobs] 任务异常 task_id=%s", task_id)
         store.finish_task(task_id, "error", summary={}, error=f"{type(exc).__name__}: {exc}")
+        _discard_registry(task_id)
+        return
+
+    if result.cancelled:
+        store.finish_task(task_id, "aborted", summary={}, error="")
+        _discard_registry(task_id)
+        logger.info("[jobs] 任务完成 task_id=%s status=aborted", task_id)
         return
 
     final = result.final_state
@@ -129,6 +203,7 @@ def _run_job(task_id: str, user_id: str, initial_state: dict[str, Any]) -> None:
 
     summary = _build_summary(result, user_id)
     store.finish_task(task_id, status, summary=summary, error=result.error_msg)
+    _discard_registry(task_id)
     logger.info("[jobs] 任务完成 task_id=%s status=%s", task_id, status)
 
 
@@ -154,14 +229,8 @@ def _build_summary(result, user_id: str) -> dict[str, Any]:
 
 # ============ 产物枚举与定位 ============
 
-_ARTIFACT_SUFFIXES = {
-    "_final.tex": "final_latex",
-    "_final.pdf": "final_pdf",
-    "_draft.md": "draft",
-    "_tagged.md": "tagged",
-    "_log.json": "log",
-    "_report.md": "report",
-}
+# 后缀 → 逻辑名：反转 app.outputs 的权威映射，确保写盘与枚举两端一致。
+_ARTIFACT_SUFFIXES = {suffix: name for name, suffix in ARTIFACT_SUFFIXES.items()}
 
 
 def list_artifacts(user_id: str, task_id: str) -> list[dict[str, Any]]:
@@ -174,13 +243,13 @@ def list_artifacts(user_id: str, task_id: str) -> list[dict[str, Any]]:
         p = base / f"{task_id}{suffix}"
         if p.exists():
             items.append({"name": name, "filename": p.name, "size": p.stat().st_size})
-    assets = base / f"{task_id}_assets"
+    assets = base / f"{task_id}{ASSETS_DIR_SUFFIX}"
     if assets.is_dir():
         for f in sorted(assets.iterdir()):
             if f.is_file():
                 items.append({
                     "name": f"assets/{f.name}",
-                    "filename": f"{task_id}_assets/{f.name}",
+                    "filename": f"{task_id}{ASSETS_DIR_SUFFIX}/{f.name}",
                     "size": f.stat().st_size,
                 })
     return items
@@ -196,3 +265,78 @@ def resolve_artifact(user_id: str, task_id: str, name: str) -> Path | None:
             if base in candidate.parents or candidate.parent == base:
                 return candidate
     return None
+
+
+# ============ 编译状态与按需编译 ============
+
+def read_compile_status(user_id: str, task_id: str) -> dict[str, Any]:
+    """从 ``_log.json`` 读取编译状态，供 API 暴露（无日志或解析失败返回空状态）。
+
+    Returns:
+        ``{"latex_compile_status": {...}, "figure_compile_status": {...}}``。
+    """
+    empty = {"latex_compile_status": {}, "figure_compile_status": {}}
+    log_path = resolve_artifact(user_id, task_id, "log")
+    if log_path is None or not log_path.exists():
+        return empty
+    try:
+        data = json.loads(log_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return empty
+    return {
+        "latex_compile_status": data.get("latex_compile_status", {}) or {},
+        "figure_compile_status": data.get("figure_compile_status", {}) or {},
+    }
+
+
+def _compile_lock_for(task_id: str) -> threading.Lock:
+    """获取（或惰性创建）某任务的编译锁。"""
+    with _compile_registry_lock:
+        lock = _compile_locks.get(task_id)
+        if lock is None:
+            lock = threading.Lock()
+            _compile_locks[task_id] = lock
+        return lock
+
+
+def discard_compile_lock(task_id: str) -> None:
+    """删除某任务的编译锁，避免注册表随任务删除而无限增长。
+
+    仅在当前无编译进行（锁空闲）时移除；若正有编译在进行则跳过，
+    交由下次删除时清理。应在任务被删除后调用。
+    """
+    with _compile_registry_lock:
+        lock = _compile_locks.get(task_id)
+        if lock is None:
+            return
+        if lock.acquire(blocking=False):
+            try:
+                del _compile_locks[task_id]
+            finally:
+                lock.release()
+
+
+def recompile_task(user_id: str, task_id: str) -> dict[str, Any]:
+    """按需重新编译任务的最终 LaTeX 与图片（不调用 LLM），串行化执行。
+
+    Returns:
+        编译状态字典（同 :func:`read_compile_status` 的结构）。
+
+    Raises:
+        FileNotFoundError: 无 ``final_latex`` 产物，无可编译对象。
+        RuntimeError: 已有一次编译在进行中（未取得锁）。
+    """
+    lock = _compile_lock_for(task_id)
+    if not lock.acquire(blocking=False):
+        raise RuntimeError("该任务正在编译中，请稍后重试")
+    try:
+        logger.info("[jobs] 按需编译开始 task_id=%s user=%s", task_id, user_id)
+        status = recompile_outputs(task_id, user_output_dir(user_id))
+        logger.info(
+            "[jobs] 按需编译完成 task_id=%s ok=%s",
+            task_id, status["latex_compile_status"].get("ok"),
+        )
+        return status
+    finally:
+        lock.release()
+

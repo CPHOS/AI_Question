@@ -15,13 +15,33 @@ import os
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from model.state import WorkflowData
 from config.config import (
-    logger, PROJECT_ROOT, LLM_PROVIDER, OPENROUTER_API_KEY, MODEL_TIMEOUT,
-    LATEX_ENGINE, AUTO_COMPILE_FIGURES, AUTO_COMPILE_LATEX, CPHOS_TEMPLATE_DIR,
+    logger, PROJECT_ROOT, LATEX_ENGINE, CPHOS_TEMPLATE_DIR,
 )
+from config import runtime
+from latex.template_spec import FIGURE_WIDTH
+
+
+# ============ 产物文件名后缀（单一事实来源） ============
+# 逻辑名 → 文件名后缀。:mod:`api.jobs` 反转此表枚举/定位产物，避免两处各写一份。
+ARTIFACT_SUFFIXES: dict[str, str] = {
+    "final_latex": "_final.tex",
+    "final_pdf": "_final.pdf",
+    "draft": "_draft.md",
+    "tagged": "_tagged.md",
+    "log": "_log.json",
+    "report": "_report.md",
+}
+# 每任务资产子目录后缀（图片 PDF / TikZ 源 / README）。
+ASSETS_DIR_SUFFIX: str = "_assets"
+
+# 额度查询子进程超时上限（秒）：避免 budget 快照查询拖慢主流程。
+_BUDGET_QUERY_TIMEOUT_CAP: int = 30
+
 
 
 # ============ LaTeX 文本转义与 TikZ 草稿 ============
@@ -125,11 +145,16 @@ def _build_tikz_stub(fig_name: str, data: dict) -> str:
 
 # ============ LaTeX 编译 ============
 
-def _run_latex_compile(tex_path: Path, *, cphos_template_dir: str = "") -> tuple[bool, str]:
+def _run_latex_compile(
+    tex_path: Path, *, cphos_template_dir: str = "", timeout: int | None = None
+) -> tuple[bool, str]:
     """编译单个 tex 文件，返回 (是否成功, 诊断信息)。"""
     engine = shutil.which(LATEX_ENGINE)
     if not engine:
         return False, f"未找到 LaTeX 引擎: {LATEX_ENGINE}"
+
+    if timeout is None:
+        timeout = runtime.latex_compile_timeout()
 
     env = os.environ.copy()
     if cphos_template_dir:
@@ -144,7 +169,7 @@ def _run_latex_compile(tex_path: Path, *, cphos_template_dir: str = "") -> tuple
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=180,
+            timeout=timeout,
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
@@ -185,6 +210,171 @@ def _cleanup_latex_aux(tex_path: Path) -> None:
             aux.unlink()
 
 
+# ============ 编译后端抽象（local / remote） ============
+#
+# 历史上 write_outputs 直接调本机 subprocess（``_run_latex_compile``）。为支持把
+# 编译卸载到独立服务，这里抽出统一的「构建请求」接口：一次调用提交一组有序步骤，
+# 各后端自行决定如何执行（本机串行 / 远程单作业多步骤），并把产出的 PDF 落到
+# ``workspace`` 内对应相对路径。两端对外返回结构一致的 :class:`StepResult`，因此
+# write_outputs 的产物分发与状态记录逻辑与后端无关。
+
+LATEX_BACKEND_LOCAL = "local"
+LATEX_BACKEND_REMOTE = "remote"
+
+
+@dataclass(frozen=True)
+class BuildStep:
+    """一个编译步骤：对 ``root``（workspace 相对路径）编译 ``passes`` 遍。"""
+
+    id: str
+    root: str
+    passes: int = 1
+
+
+@dataclass(frozen=True)
+class StepResult:
+    """单步编译结果。``produced`` 为产出文件的 workspace 相对路径。"""
+
+    id: str
+    ok: bool
+    log_tail: str = ""
+    produced: tuple[str, ...] = ()
+
+
+def _pdf_rel_of(root_rel: str) -> str:
+    """由 root 的相对路径推出其 PDF 产物相对路径（同目录、同名 .pdf）。"""
+    return str(Path(root_rel).with_suffix(".pdf"))
+
+
+class LocalCompiler:
+    """本机后端：在 ``workspace`` 原地用 subprocess 串行编译各步。"""
+
+    def compile_many(
+        self,
+        workspace: Path,
+        steps: list[BuildStep],
+        *,
+        assets: tuple[str, ...] = (),
+        template_dir: str = "",
+        timeout: int | None = None,
+    ) -> dict[str, StepResult]:
+        # 本机后端的资产（assets）已在磁盘上，无需额外处理。
+        results: dict[str, StepResult] = {}
+        for step in steps:
+            tex_path = workspace / step.root
+            ok, detail = False, ""
+            for _ in range(max(1, step.passes)):
+                ok, detail = _run_latex_compile(
+                    tex_path, cphos_template_dir=template_dir, timeout=timeout
+                )
+                if not ok:
+                    break
+            _cleanup_latex_aux(tex_path)
+            produced: tuple[str, ...] = ()
+            pdf_path = tex_path.with_suffix(".pdf")
+            if ok and pdf_path.exists():
+                produced = (_pdf_rel_of(step.root),)
+            results[step.id] = StepResult(step.id, ok, detail, produced)
+        return results
+
+
+class RemoteCompiler:
+    """远程后端：把全部步骤打包成单个编译作业提交、轮询、回收产物。"""
+
+    def compile_many(
+        self,
+        workspace: Path,
+        steps: list[BuildStep],
+        *,
+        assets: tuple[str, ...] = (),
+        template_dir: str = "",
+        timeout: int | None = None,
+    ) -> dict[str, StepResult]:
+        from client.latex_service import LatexServiceClient, LatexServiceError
+
+        base_url = runtime.latex_service_base_url()
+        if not base_url:
+            return {
+                s.id: StepResult(s.id, False, "LATEX_SERVICE_BASE_URL 未配置")
+                for s in steps
+            }
+        if timeout is None:
+            timeout = runtime.latex_compile_timeout()
+
+        # 收集工作区文件：步骤 root（tex 源）+ 额外资产（如已编译的图片 PDF）。
+        files: dict[str, bytes] = {}
+        for rel in [s.root for s in steps] + list(assets):
+            fp = workspace / rel
+            if fp.exists():
+                files[rel] = fp.read_bytes()
+
+        manifest = {
+            "engine": LATEX_ENGINE,
+            "timeout_seconds": timeout,
+            "steps": [{"id": s.id, "root": s.root, "passes": s.passes} for s in steps],
+            "outputs": [_pdf_rel_of(s.root) for s in steps],
+        }
+
+        try:
+            with LatexServiceClient(base_url) as client:
+                job = client.submit(files, manifest)
+                job = client.wait(
+                    job.job_id,
+                    poll_interval=runtime.latex_service_poll_interval(),
+                    max_wait=runtime.latex_service_max_wait(),
+                )
+                if job.status == "failed":
+                    detail = (job.error or {}).get("message", "远程编译作业失败")
+                    results = {s.id: StepResult(s.id, False, str(detail)) for s in steps}
+                    client.delete(job.job_id)
+                    return results
+                if job.status == "expired":
+                    return {s.id: StepResult(s.id, False, "远程编译作业已过期") for s in steps}
+
+                results = self._collect(client, job, steps, workspace)
+                client.delete(job.job_id)
+                return results
+        except LatexServiceError as exc:
+            return {
+                s.id: StepResult(s.id, False, f"远程编译失败: {exc}") for s in steps
+            }
+
+    def _collect(self, client, job, steps: list[BuildStep], workspace: Path) -> dict[str, StepResult]:
+        """把作业的步骤结果转为 StepResult，并把产物 PDF 下载回工作区。"""
+        from client.latex_service import LatexServiceError
+
+        step_by_id = {st.get("id"): st for st in job.steps}
+        results: dict[str, StepResult] = {}
+        for step in steps:
+            st = step_by_id.get(step.id)
+            if st is None:
+                results[step.id] = StepResult(step.id, False, "服务未返回该步骤结果")
+                continue
+            ok = bool(st.get("ok"))
+            log_tail = str(st.get("log_tail", ""))
+            produced = tuple(st.get("produced", []))
+            if ok:
+                for rel in produced:
+                    try:
+                        data = client.fetch_artifact(job.job_id, rel)
+                    except LatexServiceError as exc:
+                        ok = False
+                        log_tail += f"\n[产物下载失败] {rel}: {exc}"
+                        continue
+                    dest = workspace / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(data)
+            results[step.id] = StepResult(step.id, ok, log_tail, produced)
+        return results
+
+
+def _get_compiler():
+    """按运行期设置选择编译后端。"""
+    if runtime.latex_compiler_backend() == LATEX_BACKEND_REMOTE:
+        return RemoteCompiler()
+    return LocalCompiler()
+
+
 def _rewrite_figure_asset_paths(
     latex: str,
     task_id: str,
@@ -198,10 +388,10 @@ def _rewrite_figure_asset_paths(
         if filename:
             src = f"fig/{filename}"
             if available_pdfs is None or filename in available_pdfs:
-                result = result.replace(f"{{{src}}}", f"{{{task_id}_assets/{filename}}}")
+                result = result.replace(f"{{{src}}}", f"{{{task_id}{ASSETS_DIR_SUFFIX}/{filename}}}")
             else:
                 placeholder = (
-                    r"\fbox{\parbox{0.55\textwidth}{\centering "
+                    rf"\fbox{{\parbox{{{FIGURE_WIDTH}}}{{\centering "
                     f"插图 PDF 未生成：{_tex_escape_text(filename)}"
                     r"}}"
                 )
@@ -217,12 +407,15 @@ def _rewrite_figure_asset_paths(
 
 def budget_snapshot() -> dict:
     """查询当前 API 额度快照，失败时返回错误对象供报告记录。"""
-    if LLM_PROVIDER != "openrouter":
-        return {"provider": LLM_PROVIDER, "available": False, "error": "非 OpenRouter provider"}
+    creds = runtime.openrouter_credentials()
+    if creds is None:
+        return {"provider": "openrouter", "available": False,
+                "error": "未配置 OpenRouter 服务商凭据"}
+    api_key, timeout = creds
     try:
         from client.openrouter import query_openrouter_credits
 
-        data = query_openrouter_credits(OPENROUTER_API_KEY, timeout=min(MODEL_TIMEOUT, 30))
+        data = query_openrouter_credits(api_key, timeout=min(timeout, _BUDGET_QUERY_TIMEOUT_CAP))
         data["provider"] = "openrouter"
         data["available"] = True
         return data
@@ -243,6 +436,102 @@ def budget_delta_usd(start: dict, end: dict) -> float | None:
     if isinstance(start.get("total_usage"), (int, float)) and isinstance(end.get("total_usage"), (int, float)):
         return round(float(end["total_usage"]) - float(start["total_usage"]), 6)
     return None
+
+
+# ============ 编译辅助（写盘与按需编译共用） ============
+
+def _compile_final_document(
+    task_id: str, output_dir: Path, available_figure_pdfs: set[str],
+) -> tuple[dict, Path | None]:
+    """编译最终文档（``passes=2``，带 CPHOS 模板与图片 PDF 资产）。
+
+    无视 ``AUTO_COMPILE_LATEX`` 开关——是否调用由上层决定；本函数只负责执行。
+
+    Returns:
+        ``(latex_compile_status, final_pdf_path | None)``。
+    """
+    final_tex = output_dir / f"{task_id}{ARTIFACT_SUFFIXES['final_latex']}"
+    if not final_tex.exists():
+        return {"ok": False, "detail": "final_latex 不存在", "template_dir": CPHOS_TEMPLATE_DIR}, None
+    template_dir = _resolve_template_dir(CPHOS_TEMPLATE_DIR)
+    fig_assets = tuple(
+        str(Path(f"{task_id}{ASSETS_DIR_SUFFIX}") / name)
+        for name in sorted(available_figure_pdfs)
+    )
+    results = _get_compiler().compile_many(
+        output_dir,
+        [BuildStep(id="final", root=final_tex.name, passes=2)],
+        assets=fig_assets,
+        template_dir=template_dir,
+    )
+    result = results["final"]
+    status = {"ok": result.ok, "detail": result.log_tail, "template_dir": template_dir}
+    pdf = final_tex.with_suffix(".pdf")
+    return status, (pdf if result.ok and pdf.exists() else None)
+
+
+def _update_log_compile_status(
+    task_id: str, output_dir: Path, latex_status: dict, figure_status: dict,
+) -> None:
+    """把最新编译状态写回 ``_log.json``（若存在），作为 API 暴露的单一数据源。"""
+    log_path = output_dir / f"{task_id}{ARTIFACT_SUFFIXES['log']}"
+    if not log_path.exists():
+        return
+    try:
+        data = json.loads(log_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    data["latex_compile_status"] = latex_status
+    data["figure_compile_status"] = figure_status
+    log_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def recompile_outputs(task_id: str, output_dir: Path) -> dict:
+    """对磁盘上已有的最终 LaTeX 与图片 TikZ 源**重新编译**（不调用 LLM）。
+
+    用于按需生成 / 刷新 PDF：典型场景是生成时 ``AUTO_COMPILE_LATEX=false`` 未产出
+    PDF，事后由用户显式触发编译。流程：
+
+    1. 重编 ``{task}_assets/`` 下的 ``figN.tex`` standalone 源 → ``figN.pdf``；
+    2. 以可用图片 PDF 为资产重编最终文档（``passes=2``）；
+    3. 把最新编译状态写回 ``_log.json``。
+
+    注意：最终 LaTeX 中的图片引用 / 占位在生成时已根据当时可用的图片确定，本函数
+    不重写引用路径；若需要据新编译出的图片刷新引用，应重跑生成任务。
+
+    Returns:
+        ``{"latex_compile_status": {...}, "figure_compile_status": {...}}``。
+
+    Raises:
+        FileNotFoundError: 任务无 ``final_latex`` 产物，无可编译对象。
+    """
+    final_tex = output_dir / f"{task_id}{ARTIFACT_SUFFIXES['final_latex']}"
+    if not final_tex.exists():
+        raise FileNotFoundError(f"任务 {task_id} 无 final_latex 产物，无法编译")
+
+    compiler = _get_compiler()
+    figure_compile_status: dict[str, dict] = {}
+    available_figure_pdfs: set[str] = set()
+
+    assets_dir = output_dir / f"{task_id}{ASSETS_DIR_SUFFIX}"
+    if assets_dir.is_dir():
+        fig_steps = [
+            BuildStep(id=tex.stem, root=tex.name, passes=1)
+            for tex in sorted(assets_dir.glob("*.tex"))
+        ]
+        if fig_steps:
+            for fig_id, result in compiler.compile_many(assets_dir, fig_steps).items():
+                figure_compile_status[fig_id] = {"ok": result.ok, "detail": result.log_tail}
+                pdf = assets_dir / f"{fig_id}.pdf"
+                if result.ok and pdf.exists():
+                    available_figure_pdfs.add(pdf.name)
+
+    latex_compile_status, _ = _compile_final_document(task_id, output_dir, available_figure_pdfs)
+    _update_log_compile_status(task_id, output_dir, latex_compile_status, figure_compile_status)
+    return {
+        "latex_compile_status": latex_compile_status,
+        "figure_compile_status": figure_compile_status,
+    }
 
 
 # ============ 产物写盘 ============
@@ -266,20 +555,22 @@ def write_outputs(task_id: str, final_state: WorkflowData, output_dir: Path) -> 
     available_figure_pdfs: set[str] = set()
 
     if final_state.get("draft_content"):
-        p = output_dir / f"{task_id}_draft.md"
+        p = output_dir / f"{task_id}{ARTIFACT_SUFFIXES['draft']}"
         p.write_text(final_state["draft_content"], encoding="utf-8")
         paths["draft"] = p
 
     if final_state.get("tagged_text"):
-        p = output_dir / f"{task_id}_tagged.md"
+        p = output_dir / f"{task_id}{ARTIFACT_SUFFIXES['tagged']}"
         p.write_text(final_state["tagged_text"], encoding="utf-8")
         paths["tagged"] = p
 
     # ===== 图片绘制需求与外置 PDF 资产 =====
     if fig_desc:
-        assets_dir = output_dir / f"{task_id}_assets"
+        assets_dir = output_dir / f"{task_id}{ASSETS_DIR_SUFFIX}"
         assets_dir.mkdir(exist_ok=True)
         lines = ["# 图片绘制需求\n\n"]
+        fig_steps: list[BuildStep] = []  # 一次性提交的图片编译步骤
+        step_to_fig: dict[str, str] = {}  # 步骤 id → 图片键
         for fig_name in sorted(fig_desc.keys()):
             data = fig_desc[fig_name]
             lines.append(f"## {data['filename']} — {data['caption']}\n\n")
@@ -291,26 +582,30 @@ def write_outputs(task_id: str, final_state: WorkflowData, output_dir: Path) -> 
                 tikz_path = assets_dir / data["tikz_filename"]
                 tikz_path.write_text(_build_tikz_stub(fig_name, data), encoding="utf-8")
                 paths[f"{fig_name}_tikz"] = tikz_path
-                if AUTO_COMPILE_FIGURES:
-                    ok, detail = _run_latex_compile(tikz_path)
-                    figure_compile_status[fig_name] = {"ok": ok, "detail": detail}
-                    _cleanup_latex_aux(tikz_path)
-                    pdf_path = assets_dir / data["filename"]
-                    if ok and pdf_path.exists():
-                        paths[f"{fig_name}_pdf"] = pdf_path
-                        available_figure_pdfs.add(data["filename"])
+                if runtime.auto_compile_figures():
+                    fig_steps.append(BuildStep(id=fig_name, root=data["tikz_filename"], passes=1))
+                    step_to_fig[fig_name] = fig_name
                 else:
                     figure_compile_status[fig_name] = {
                         "ok": False,
                         "detail": "AUTO_COMPILE_FIGURES=false",
                     }
+        # 图片为 standalone tex（不依赖 CPHOS 模板），整批作为一个多步骤作业编译。
+        if fig_steps:
+            fig_results = _get_compiler().compile_many(assets_dir, fig_steps)
+            for fig_name, result in fig_results.items():
+                figure_compile_status[fig_name] = {"ok": result.ok, "detail": result.log_tail}
+                pdf_path = assets_dir / fig_desc[fig_name]["filename"]
+                if result.ok and pdf_path.exists():
+                    paths[f"{fig_name}_pdf"] = pdf_path
+                    available_figure_pdfs.add(fig_desc[fig_name]["filename"])
         p = assets_dir / "README.md"
         p.write_text("".join(lines), encoding="utf-8")
         paths["figure_descriptions"] = p
         logger.info(f"[output] 导出图片需求: {p}")
 
     if final_state.get("final_latex"):
-        p = output_dir / f"{task_id}_final.tex"
+        p = output_dir / f"{task_id}{ARTIFACT_SUFFIXES['final_latex']}"
         final_latex = _rewrite_figure_asset_paths(
             final_state["final_latex"],
             task_id,
@@ -321,18 +616,12 @@ def write_outputs(task_id: str, final_state: WorkflowData, output_dir: Path) -> 
         paths["final_latex"] = p
         logger.info(f"[output] 导出 LaTeX: {p.name}")
 
-    if AUTO_COMPILE_LATEX and paths.get("final_latex"):
-        template_dir = _resolve_template_dir(CPHOS_TEMPLATE_DIR)
-        ok1, detail1 = _run_latex_compile(paths["final_latex"], cphos_template_dir=template_dir)
-        ok2, detail2 = _run_latex_compile(paths["final_latex"], cphos_template_dir=template_dir) if ok1 else (False, detail1)
-        latex_compile_status.update({
-            "ok": ok1 and ok2,
-            "detail": detail2 if ok2 else detail1,
-            "template_dir": template_dir,
-        })
-        pdf_path = paths["final_latex"].with_suffix(".pdf")
-        if ok1 and ok2 and pdf_path.exists():
-            paths["final_pdf"] = pdf_path
+    if runtime.auto_compile_latex() and paths.get("final_latex"):
+        latex_compile_status, final_pdf = _compile_final_document(
+            task_id, output_dir, available_figure_pdfs
+        )
+        if final_pdf is not None:
+            paths["final_pdf"] = final_pdf
     else:
         latex_compile_status.update({
             "ok": False,
@@ -369,7 +658,7 @@ def write_outputs(task_id: str, final_state: WorkflowData, output_dir: Path) -> 
         "api_cost_usd": final_state.get("api_cost_usd"),
         "has_final_output": bool(final_state.get("final_latex")),
     }
-    p = output_dir / f"{task_id}_log.json"
+    p = output_dir / f"{task_id}{ARTIFACT_SUFFIXES['log']}"
     with open(p, "w", encoding="utf-8") as f:
         json.dump(log_data, f, ensure_ascii=False, indent=2)
     paths["log"] = p
@@ -392,7 +681,7 @@ def write_outputs(task_id: str, final_state: WorkflowData, output_dir: Path) -> 
         f"| 难度 | {final_state.get('difficulty', '')} |\n",
         f"| 总分 | {final_state.get('total_score', 0)} |\n\n",
         f"## API 费用\n\n",
-        f"- **Provider**: {final_state.get('api_budget_end', {}).get('provider', LLM_PROVIDER)}\n",
+        f"- **Provider**: {final_state.get('api_budget_end', {}).get('provider', 'openrouter')}\n",
         f"- **本题消耗估计**: {final_state.get('api_cost_usd') if final_state.get('api_cost_usd') is not None else '未取得'} USD\n",
         f"- **开始额度快照**: `{json.dumps(final_state.get('api_budget_start', {}), ensure_ascii=False)}`\n",
         f"- **结束额度快照**: `{json.dumps(final_state.get('api_budget_end', {}), ensure_ascii=False)}`\n\n",
@@ -416,7 +705,7 @@ def write_outputs(task_id: str, final_state: WorkflowData, output_dir: Path) -> 
         f"## 仲裁反馈\n\n",
         f"{final_state.get('arbiter_feedback', '无')}\n",
     ]
-    p = output_dir / f"{task_id}_report.md"
+    p = output_dir / f"{task_id}{ARTIFACT_SUFFIXES['report']}"
     p.write_text("".join(report_lines), encoding="utf-8")
     paths["report"] = p
     logger.info(f"[output] 导出仲裁报告: {p.name}")

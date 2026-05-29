@@ -9,9 +9,17 @@ from agents.problem_generator import problem_generator_agent
 from agents.reviewers import _structure_check
 from client import UsageInfo
 from client.openai_compat import OpenAICompatibleClient
+from config.runtime import ResolvedModel
 from engine.state_machine import GenerationStateMachine
 from model.schema import ArbiterDecision
-from spec.normalizer import from_cli
+from spec.normalizer import from_api
+
+
+_FAKE_MODEL = ResolvedModel(
+    role="fake", provider_kind="openrouter", api_key="k", base_url="",
+    timeout=600, max_retries=3, model="fake-model", temperature=0.0,
+    max_tokens=4096, streaming=False,
+)
 
 
 def _tool_response(payload):
@@ -25,7 +33,7 @@ def _tool_response(payload):
 
 
 def _minimal_arbiter_state():
-    state = from_cli(topic="topic", difficulty="medium", total_score=50)
+    state = from_api(topic="topic", difficulty="medium", total_score=50)
     state.update(
         {
             "draft_content": "problem\n\nsolution",
@@ -55,10 +63,10 @@ def test_arbiter_decision_rejects_invalid_decision_category_pairs():
         )
 
 
-@patch("agents.arbiter.get_client")
-def test_arbiter_relabels_invalid_structured_tags(mock_get_client):
+@patch("agents.arbiter.build_client")
+def test_arbiter_relabels_invalid_structured_tags(mock_build_client):
     client = MagicMock()
-    mock_get_client.return_value = client
+    mock_build_client.return_value = (client, _FAKE_MODEL)
     client.create.side_effect = [
         _tool_response(
             {
@@ -89,7 +97,7 @@ def test_arbiter_relabels_invalid_structured_tags(mock_get_client):
 
 def test_router_rejects_invalid_structured_tags():
     machine = GenerationStateMachine()
-    state = from_cli(topic="topic", difficulty="medium", total_score=50)
+    state = from_api(topic="topic", difficulty="medium", total_score=50)
     state.update(
         {
             "arbiter_decision": "PASS",
@@ -105,7 +113,7 @@ def test_router_rejects_invalid_structured_tags():
 
 def test_router_rejects_pass_with_unknown_error_category():
     machine = GenerationStateMachine()
-    state = from_cli(topic="topic", difficulty="medium", total_score=50)
+    state = from_api(topic="topic", difficulty="medium", total_score=50)
     state.update(
         {
             "arbiter_decision": "PASS",
@@ -121,7 +129,7 @@ def test_router_rejects_pass_with_unknown_error_category():
 
 def test_router_maps_pass_style_to_pass_with_edits():
     machine = GenerationStateMachine()
-    state = from_cli(topic="topic", difficulty="medium", total_score=50)
+    state = from_api(topic="topic", difficulty="medium", total_score=50)
     state.update(
         {
             "arbiter_decision": "PASS",
@@ -137,7 +145,7 @@ def test_router_maps_pass_style_to_pass_with_edits():
 
 def test_router_rejects_unknown_decision():
     machine = GenerationStateMachine()
-    state = from_cli(topic="topic", difficulty="medium", total_score=50)
+    state = from_api(topic="topic", difficulty="medium", total_score=50)
     state.update(
         {
             "arbiter_decision": "RETRY",
@@ -152,14 +160,14 @@ def test_router_rejects_unknown_decision():
 
 
 @patch("agents.problem_generator.stream_chat")
-@patch("agents.problem_generator.get_client")
+@patch("agents.problem_generator.build_client")
 def test_problem_generator_clears_stale_solution_on_problem_retry(
-    mock_get_client,
+    mock_build_client,
     mock_stream_chat,
 ):
-    mock_get_client.return_value = MagicMock()
+    mock_build_client.return_value = (MagicMock(), _FAKE_MODEL)
     mock_stream_chat.return_value = ("Problem body", UsageInfo())
-    state = from_cli(topic="topic", difficulty="medium", total_score=50)
+    state = from_api(topic="topic", difficulty="medium", total_score=50)
     state.update(
         {
             "problem_retry_count": 1,
@@ -195,7 +203,7 @@ def test_openai_compatible_client_passes_configured_max_retries(mock_openai):
 
 
 def test_structure_check_reports_many_leaf_questions_as_hint_for_40_points():
-    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state = from_api(topic="topic", difficulty="medium", total_score=40)
     state.update(
         {
             "problem_text": "\n".join(
@@ -233,7 +241,7 @@ def test_structure_check_reports_many_leaf_questions_as_hint_for_40_points():
 
 
 def test_structure_check_counts_only_deepest_question_nodes_as_leaves():
-    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state = from_api(topic="topic", difficulty="medium", total_score=40)
     state.update(
         {
             "problem_text": "\n".join(
@@ -256,7 +264,7 @@ def test_structure_check_counts_only_deepest_question_nodes_as_leaves():
 
 
 def test_structure_check_does_not_double_count_parent_and_leaf_scores():
-    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state = from_api(topic="topic", difficulty="medium", total_score=40)
     state.update(
         {
             "problem_text": "\n".join(
@@ -290,7 +298,7 @@ def test_structure_check_does_not_double_count_parent_and_leaf_scores():
 
 
 def test_structure_check_sums_mixed_parent_and_leaf_score_groups():
-    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state = from_api(topic="topic", difficulty="medium", total_score=40)
     state.update(
         {
             "problem_text": "\n".join(
@@ -322,7 +330,7 @@ def test_structure_check_sums_mixed_parent_and_leaf_score_groups():
 
 
 def test_structure_check_reports_duplicate_solution_question_scores():
-    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state = from_api(topic="topic", difficulty="medium", total_score=40)
     state.update(
         {
             "problem_text": "\n".join(
@@ -349,7 +357,7 @@ def test_structure_check_reports_duplicate_solution_question_scores():
 
 
 def test_structure_check_reports_duplicate_solution_part_scores():
-    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state = from_api(topic="topic", difficulty="medium", total_score=40)
     state.update(
         {
             "problem_text": "\n".join(
@@ -376,7 +384,7 @@ def test_structure_check_reports_duplicate_solution_part_scores():
 
 
 def test_structure_check_allows_repeated_subquestions_under_part_scores():
-    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state = from_api(topic="topic", difficulty="medium", total_score=40)
     state.update(
         {
             "problem_text": "\n".join(
@@ -408,7 +416,7 @@ def test_structure_check_allows_repeated_subquestions_under_part_scores():
 
 
 def test_structure_check_accepts_fullwidth_question_numbers():
-    state = from_cli(topic="topic", difficulty="medium", total_score=40)
+    state = from_api(topic="topic", difficulty="medium", total_score=40)
     state.update(
         {
             "problem_text": "\n".join(

@@ -15,57 +15,24 @@ from contextvars import copy_context
 
 from model.state import WorkflowData, ReviewOutput, ReviewPatch
 from model.stats import record
-from client import get_client, stream_chat
-from config.config import BIG_MODEL_NAME, BIG_MODEL_MAX_TOKENS, logger
+from client import stream_chat
+from config.config import logger
+from config.runtime import build_client
 from prompts import load
+from spec.task import DEFAULT_TOTAL_SCORE
+from utils.scoring import (
+    NUMBERED_QUESTION_RE as _NUMBERED_QUESTION_RE,
+    find_duplicates as _find_duplicates,
+    sum_hierarchical_scores as _sum_hierarchical_scores,
+)
 
+# 质量审核时源材料进入上下文的最大字符数（独立于 source_material_max_chars：
+# 前者限制「整体入库长度」，此处限制「单次质量审核 prompt 内的摘录长度」）。
+_QUALITY_SOURCE_MATERIAL_MAX_CHARS = 8000
 
-_NUMBERED_QUESTION_RE = r'[（(](\d+(?:\.\d+)*)[）)]'
-
-
-def _find_duplicates(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    duplicates: list[str] = []
-    for value in values:
-        if value in seen and value not in duplicates:
-            duplicates.append(value)
-        seen.add(value)
-    return duplicates
-
-
-def _sum_hierarchical_scores(scored_items: list[tuple[str, str]]) -> int:
-    """按小问层级求和：有父级分值时用父级，否则累加该子树下的可见子级分值。"""
-    duplicates = _find_duplicates([number for number, _ in scored_items])
-    if duplicates:
-        raise ValueError(f"重复的小问分值标注: {', '.join(duplicates)}")
-
-    scores: dict[str, int] = {}
-    for number, score in scored_items:
-        scores[number] = int(score)
-    if not scores:
-        return 0
-
-    children: dict[str, list[str]] = {number: [] for number in scores}
-    roots: list[str] = []
-    for number in scores:
-        parent = None
-        parts = number.split(".")
-        for depth in range(len(parts) - 1, 0, -1):
-            candidate = ".".join(parts[:depth])
-            if candidate in scores:
-                parent = candidate
-                break
-        if parent is None:
-            roots.append(number)
-        else:
-            children[parent].append(number)
-
-    def subtotal(number: str) -> int:
-        if number in scores:
-            return scores[number]
-        return sum(subtotal(child) for child in children.get(number, []))
-
-    return sum(subtotal(root) for root in roots)
+# 标准分值题（<= DEFAULT_TOTAL_SCORE）的默认题量形态：超过则给出题量提示。
+_DEFAULT_MAX_TOP_SUBQ = 3    # 一级小问建议上限
+_DEFAULT_MAX_LEAF_SUBQ = 5   # 叶子小问建议上限
 
 
 # ------------------------------------------------------------------
@@ -75,7 +42,7 @@ def _sum_hierarchical_scores(scored_items: list[tuple[str, str]]) -> int:
 def _math_check(data: WorkflowData) -> ReviewPatch:
     """数学检查：验证解答中所有数学推导的正确性。"""
     logger.info("[math_check] 进入数学检查节点")
-    client = get_client()
+    client, m = build_client("reviewer_math")
 
     messages = [
         {"role": "system", "content": load("reviewers", "math_system_prompt")},
@@ -85,8 +52,9 @@ def _math_check(data: WorkflowData) -> ReviewPatch:
 
     t0 = time.time()
     content, usage = stream_chat(
-        client, model=BIG_MODEL_NAME,
-        messages=messages, temperature=0.0, max_tokens=BIG_MODEL_MAX_TOKENS,
+        client, model=m.model,
+        messages=messages, temperature=m.temperature, max_tokens=m.max_tokens,
+        stream=m.streaming,
     )
     elapsed = time.time() - t0
     logger.info("[math_check] 完成 | %d 字符 | %.0fs", len(content), elapsed)
@@ -107,7 +75,7 @@ def _math_check(data: WorkflowData) -> ReviewPatch:
 def _physics_check(data: WorkflowData) -> ReviewPatch:
     """物理检查：验证题目的物理正确性、量纲一致性和模型自洽性。"""
     logger.info("[physics_check] 进入物理检查节点")
-    client = get_client()
+    client, m = build_client("reviewer_physics")
 
     messages = [
         {"role": "system", "content": load("reviewers", "physics_system_prompt")},
@@ -117,8 +85,9 @@ def _physics_check(data: WorkflowData) -> ReviewPatch:
 
     t0 = time.time()
     content, usage = stream_chat(
-        client, model=BIG_MODEL_NAME,
-        messages=messages, temperature=0.0, max_tokens=BIG_MODEL_MAX_TOKENS,
+        client, model=m.model,
+        messages=messages, temperature=m.temperature, max_tokens=m.max_tokens,
+        stream=m.streaming,
     )
     elapsed = time.time() - t0
     logger.info("[physics_check] 完成 | %d 字符 | %.0fs", len(content), elapsed)
@@ -139,11 +108,11 @@ def _physics_check(data: WorkflowData) -> ReviewPatch:
 def _quality_check(data: WorkflowData) -> ReviewPatch:
     """质量检查：评估是否具有 CPHOS 联考试题的深度、梯度和可评分性。"""
     logger.info("[quality_check] 进入质量检查节点")
-    client = get_client()
+    client, m = build_client("reviewer_quality")
 
     source_material = data.get("source_material", "")
-    if len(source_material) > 8000:
-        source_material = source_material[:8000] + "\n\n【源材料摘录截断】"
+    if len(source_material) > _QUALITY_SOURCE_MATERIAL_MAX_CHARS:
+        source_material = source_material[:_QUALITY_SOURCE_MATERIAL_MAX_CHARS] + "\n\n【源材料摘录截断】"
 
     messages = [
         {"role": "system", "content": load("reviewers", "quality_system_prompt")},
@@ -160,8 +129,9 @@ def _quality_check(data: WorkflowData) -> ReviewPatch:
 
     t0 = time.time()
     content, usage = stream_chat(
-        client, model=BIG_MODEL_NAME,
-        messages=messages, temperature=0.0, max_tokens=BIG_MODEL_MAX_TOKENS,
+        client, model=m.model,
+        messages=messages, temperature=m.temperature, max_tokens=m.max_tokens,
+        stream=m.streaming,
     )
     elapsed = time.time() - t0
     logger.info("[quality_check] 完成 | %d 字符 | %.0fs", len(content), elapsed)
@@ -210,9 +180,12 @@ def _structure_check(data: WorkflowData) -> ReviewPatch:
             f"题量统计：总分 {total_score}，一级小问 {len(top_level)} 个，"
             f"叶子小问 {leaf_count} 个。"
         )
-        if total_score <= 40 and (leaf_count > 5 or len(top_level) > 3):
+        if total_score <= DEFAULT_TOTAL_SCORE and (
+            leaf_count > _DEFAULT_MAX_LEAF_SUBQ or len(top_level) > _DEFAULT_MAX_TOP_SUBQ
+        ):
             notes.append(
-                "题量提示：40 分题通常以 2-3 个一级小问、3-5 个叶子小问为默认形态；"
+                f"题量提示：{DEFAULT_TOTAL_SCORE} 分题通常以 2-{_DEFAULT_MAX_TOP_SUBQ} 个一级小问、"
+                f"3-{_DEFAULT_MAX_LEAF_SUBQ} 个叶子小问为默认形态；"
                 "若题目存在长推导或原题充实任务，可保留更多叶子小问，但质量审核需关注是否能合并同一推导链。"
             )
 

@@ -6,12 +6,38 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 from engine.state_machine import build_graph, Phase
-from spec.normalizer import from_cli
+from spec.normalizer import from_api
 from client import UsageInfo
+from config.runtime import ResolvedModel
 from model.stats import clear as _clear_stats
 
 
 _ZERO_USAGE = UsageInfo()
+
+# 供 build_client mock 返回的解析模型快照（stream_chat / create 已被 patch，
+# 这里的具体取值不影响断言，仅用于填充调用 kwargs）。
+_FAKE_MODEL = ResolvedModel(
+    role="fake", provider_kind="openrouter", api_key="k", base_url="",
+    timeout=600, max_retries=3, model="fake-model", temperature=0.0,
+    max_tokens=4096, streaming=False,
+)
+
+
+def _set_stream_clients(*mocks) -> None:
+    """把若干 build_client mock 设为返回 ``(MagicMock(), _FAKE_MODEL)``。"""
+    for m in mocks:
+        m.return_value = (MagicMock(), _FAKE_MODEL)
+
+
+def _set_arbiter_client(mock_arb_build, resp_or_side):
+    """配置 arbiter 的 build_client mock，返回 ``(client, _FAKE_MODEL)``。"""
+    client = MagicMock()
+    if isinstance(resp_or_side, list):
+        client.create.side_effect = resp_or_side
+    else:
+        client.create.return_value = resp_or_side
+    mock_arb_build.return_value = (client, _FAKE_MODEL)
+    return client
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +49,7 @@ def _reset_run_stats():
 
 
 def _make_initial_state(**overrides):
-    state = from_cli(topic="测试主题", difficulty="测试难度", total_score=50)
+    state = from_api(topic="测试主题", difficulty="测试难度", total_score=50)
     state.update(overrides)
     return state
 
@@ -46,16 +72,16 @@ class TestStateMachineRouting:
     """测试状态机条件路由。"""
 
     @patch("latex.format.stream_chat")
-    @patch("latex.format.get_client")
-    @patch("agents.arbiter.get_client")
+    @patch("latex.format.build_client")
+    @patch("agents.arbiter.build_client")
     @patch("agents.reviewers.stream_chat")
-    @patch("agents.reviewers.get_client")
+    @patch("agents.reviewers.build_client")
     @patch("agents.solution_generator.stream_chat")
-    @patch("agents.solution_generator.get_client")
+    @patch("agents.solution_generator.build_client")
     @patch("agents.problem_generator.stream_chat")
-    @patch("agents.problem_generator.get_client")
+    @patch("agents.problem_generator.build_client")
     @patch("spec.planner.stream_chat")
-    @patch("spec.planner.get_client")
+    @patch("spec.planner.build_client")
     def test_pass_path(
         self, mock_plan_client, mock_plan_chat,
         mock_prob_client, mock_prob_chat,
@@ -65,6 +91,8 @@ class TestStateMachineRouting:
         mock_fmt_client, mock_fmt_chat,
     ):
         """PASS 路径完整流程"""
+        _set_stream_clients(mock_plan_client, mock_prob_client, mock_sol_client,
+                            mock_rev_client, mock_fmt_client)
         mock_plan_chat.return_value = ("规划: 3个小问，涉及刚体力学", _ZERO_USAGE)
 
         problem_text = (
@@ -83,9 +111,7 @@ class TestStateMachineRouting:
 
         mock_rev_chat.return_value = ("【数学审核通过】无数学错误。", _ZERO_USAGE)
 
-        mock_arb_client.return_value.create.return_value = _make_tool_call_response(
-            "PASS", "无需修改"
-        )
+        _set_arbiter_client(mock_arb_client, _make_tool_call_response("PASS", "无需修改"))
 
         mock_fmt_chat.return_value = (
             "\\documentclass[answer]{cphos}\n\\begin{document}\n"
@@ -108,16 +134,16 @@ class TestStateMachineRouting:
         assert result["retry_count"] == 0
 
     @patch("latex.format.stream_chat")
-    @patch("latex.format.get_client")
-    @patch("agents.arbiter.get_client")
+    @patch("latex.format.build_client")
+    @patch("agents.arbiter.build_client")
     @patch("agents.reviewers.stream_chat")
-    @patch("agents.reviewers.get_client")
+    @patch("agents.reviewers.build_client")
     @patch("agents.solution_generator.stream_chat")
-    @patch("agents.solution_generator.get_client")
+    @patch("agents.solution_generator.build_client")
     @patch("agents.problem_generator.stream_chat")
-    @patch("agents.problem_generator.get_client")
+    @patch("agents.problem_generator.build_client")
     @patch("spec.planner.stream_chat")
-    @patch("spec.planner.get_client")
+    @patch("spec.planner.build_client")
     def test_retry_counters_split_by_stage(
         self, mock_plan_client, mock_plan_chat,
         mock_prob_client, mock_prob_chat,
@@ -128,6 +154,8 @@ class TestStateMachineRouting:
     ):
         """分阶段重试计数：RETRY_PROBLEM 与 RETRY_SOLUTION 各自独立累加，
         PASS 不递增，最终 problem_text 应重生成 2 次、solution_text 3 次。"""
+        _set_stream_clients(mock_plan_client, mock_prob_client, mock_sol_client,
+                            mock_rev_client, mock_fmt_client)
         mock_plan_chat.return_value = ("规划", _ZERO_USAGE)
 
         problem_text = '【标题】测试\n【题干】\n(1) 第一问\n'
@@ -141,12 +169,12 @@ class TestStateMachineRouting:
         mock_rev_chat.return_value = ("审核意见", _ZERO_USAGE)
 
         # 仲裁序列：RETRY_PROBLEM → RETRY_SOLUTION → RETRY_SOLUTION → PASS
-        mock_arb_client.return_value.create.side_effect = [
+        _set_arbiter_client(mock_arb_client, [
             _make_tool_call_response("RETRY_PROBLEM", "题干问题", error_category="fatal"),
             _make_tool_call_response("RETRY_SOLUTION", "解答问题", error_category="fatal"),
             _make_tool_call_response("RETRY_SOLUTION", "解答仍有误", error_category="fatal"),
             _make_tool_call_response("PASS", "通过"),
-        ]
+        ])
 
         mock_fmt_chat.return_value = (
             "\\documentclass[answer]{cphos}\n\\begin{document}\n"
@@ -178,16 +206,16 @@ class TestProgressCallback:
     """测试 run() 的节点级进度回调。"""
 
     @patch("latex.format.stream_chat")
-    @patch("latex.format.get_client")
-    @patch("agents.arbiter.get_client")
+    @patch("latex.format.build_client")
+    @patch("agents.arbiter.build_client")
     @patch("agents.reviewers.stream_chat")
-    @patch("agents.reviewers.get_client")
+    @patch("agents.reviewers.build_client")
     @patch("agents.solution_generator.stream_chat")
-    @patch("agents.solution_generator.get_client")
+    @patch("agents.solution_generator.build_client")
     @patch("agents.problem_generator.stream_chat")
-    @patch("agents.problem_generator.get_client")
+    @patch("agents.problem_generator.build_client")
     @patch("spec.planner.stream_chat")
-    @patch("spec.planner.get_client")
+    @patch("spec.planner.build_client")
     def test_on_phase_emits_running_and_completed(
         self, mock_plan_client, mock_plan_chat,
         mock_prob_client, mock_prob_chat,
@@ -197,6 +225,8 @@ class TestProgressCallback:
         mock_fmt_client, mock_fmt_chat,
     ):
         """PASS 路径应按顺序触发各阶段的 running/completed 事件。"""
+        _set_stream_clients(mock_plan_client, mock_prob_client, mock_sol_client,
+                            mock_rev_client, mock_fmt_client)
         mock_plan_chat.return_value = ("规划", _ZERO_USAGE)
         mock_prob_chat.return_value = (
             '【标题】测试题\n【题干】\n(1) 第一问\n', _ZERO_USAGE,
@@ -206,9 +236,7 @@ class TestProgressCallback:
             _ZERO_USAGE,
         )
         mock_rev_chat.return_value = ("审核意见", _ZERO_USAGE)
-        mock_arb_client.return_value.create.return_value = _make_tool_call_response(
-            "PASS", "无需修改"
-        )
+        _set_arbiter_client(mock_arb_client, _make_tool_call_response("PASS", "无需修改"))
         mock_fmt_chat.return_value = (
             "\\documentclass[answer]{cphos}\n\\begin{document}\n"
             "\\begin{problem}{测试}\n\\begin{problemstatement}\n题\n"
@@ -235,16 +263,16 @@ class TestProgressCallback:
         assert phases.index("PLANNING") < phases.index("REVIEWING")
 
     @patch("latex.format.stream_chat")
-    @patch("latex.format.get_client")
-    @patch("agents.arbiter.get_client")
+    @patch("latex.format.build_client")
+    @patch("agents.arbiter.build_client")
     @patch("agents.reviewers.stream_chat")
-    @patch("agents.reviewers.get_client")
+    @patch("agents.reviewers.build_client")
     @patch("agents.solution_generator.stream_chat")
-    @patch("agents.solution_generator.get_client")
+    @patch("agents.solution_generator.build_client")
     @patch("agents.problem_generator.stream_chat")
-    @patch("agents.problem_generator.get_client")
+    @patch("agents.problem_generator.build_client")
     @patch("spec.planner.stream_chat")
-    @patch("spec.planner.get_client")
+    @patch("spec.planner.build_client")
     def test_faulty_callback_does_not_break_run(
         self, mock_plan_client, mock_plan_chat,
         mock_prob_client, mock_prob_chat,
@@ -254,6 +282,8 @@ class TestProgressCallback:
         mock_fmt_client, mock_fmt_chat,
     ):
         """回调抛异常不应中断生成流程（容错性）。"""
+        _set_stream_clients(mock_plan_client, mock_prob_client, mock_sol_client,
+                            mock_rev_client, mock_fmt_client)
         mock_plan_chat.return_value = ("规划", _ZERO_USAGE)
         mock_prob_chat.return_value = ('【标题】X\n【题干】\n(1) 问\n', _ZERO_USAGE)
         mock_sol_chat.return_value = (
@@ -261,9 +291,7 @@ class TestProgressCallback:
             _ZERO_USAGE,
         )
         mock_rev_chat.return_value = ("审核", _ZERO_USAGE)
-        mock_arb_client.return_value.create.return_value = _make_tool_call_response(
-            "PASS", "ok"
-        )
+        _set_arbiter_client(mock_arb_client, _make_tool_call_response("PASS", "ok"))
         mock_fmt_chat.return_value = (
             "\\documentclass[answer]{cphos}\n\\begin{document}\n"
             "\\begin{problem}{X}\n\\begin{problemstatement}\n题\n"

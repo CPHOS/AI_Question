@@ -21,12 +21,10 @@ import time
 from pydantic import ValidationError
 
 from model.state import WorkflowData, ArbitrationOutput
-from model.schema import ArbiterDecision
+from model.schema import ArbiterDecision, ARBITER_DECISIONS, ERROR_CATEGORIES
 from model.stats import record, get_all as _get_stats
-from client import get_client
-from config.config import (
-    BIG_MODEL_NAME, ARBITER_MAX_TOKENS, logger,
-)
+from config.config import logger
+from config.runtime import build_client
 from prompts import load
 
 
@@ -41,15 +39,16 @@ _ARBITER_TOOLS = [{
 }]
 
 
-def _call_arbiter_model(client, messages: list[dict[str, str]], *, label: str):
+def _call_arbiter_model(client, messages: list[dict[str, str]], *, label: str,
+                        model: str, temperature: float, max_tokens: int):
     """调用仲裁模型并返回响应、耗时和 token 统计。"""
     logger.info("[arbiter] 正在等待 thinking model 仲裁 (%s)...", label)
     t0 = time.time()
     resp = client.create(
-        model=BIG_MODEL_NAME,
+        model=model,
         messages=messages,
-        temperature=0.0,
-        max_tokens=ARBITER_MAX_TOKENS,
+        temperature=temperature,
+        max_tokens=max_tokens,
         tools=_ARBITER_TOOLS,
         tool_choice={"type": "function", "function": {"name": "arbiter_decision"}},
     )
@@ -102,8 +101,8 @@ def _build_relabel_messages(
             "请只重新调用 arbiter_decision 工具，不要重新审题，不要输出正文。\n"
             f"非法载荷：{payload_text}\n"
             f"校验错误：{_error_summary(exc)}\n"
-            "合法 decision 只能是 PASS / RETRY_PROBLEM / RETRY_SOLUTION / ABORT。\n"
-            "合法 error_category 只能是 none / style / fatal。\n"
+            f"合法 decision 只能是 {' / '.join(ARBITER_DECISIONS)}。\n"
+            f"合法 error_category 只能是 {' / '.join(ERROR_CATEGORIES)}。\n"
             "合法组合为：PASS+none/style，RETRY_PROBLEM+fatal，"
             "RETRY_SOLUTION+fatal，ABORT+fatal。"
         ),
@@ -118,7 +117,7 @@ def arbiter_agent(data: WorkflowData) -> ArbitrationOutput:
     """
     logger.info("[arbiter] 进入仲裁节点")
 
-    client = get_client()
+    client, m = build_client("arbiter")
 
     messages = [
         {"role": "system", "content": load("arbiter", "system_prompt")},
@@ -135,7 +134,8 @@ def arbiter_agent(data: WorkflowData) -> ArbitrationOutput:
 
     try:
         resp, elapsed, p_tok, c_tok, t_tok = _call_arbiter_model(
-            client, messages, label="initial"
+            client, messages, label="initial",
+            model=m.model, temperature=m.temperature, max_tokens=m.max_tokens,
         )
         parsed, bad_payload, parse_error = _parse_tool_decision(resp)
 
@@ -146,7 +146,8 @@ def arbiter_agent(data: WorkflowData) -> ArbitrationOutput:
             )
             repair_messages = _build_relabel_messages(messages, bad_payload, parse_error)
             repair_resp, repair_elapsed, repair_p, repair_c, repair_t = _call_arbiter_model(
-                client, repair_messages, label="relabel"
+                client, repair_messages, label="relabel",
+                model=m.model, temperature=m.temperature, max_tokens=m.max_tokens,
             )
             elapsed += repair_elapsed
             p_tok += repair_p

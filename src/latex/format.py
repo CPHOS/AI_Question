@@ -12,10 +12,9 @@ import time
 
 from model.state import WorkflowData, LaTeXPatch
 from model.stats import record
-from client import get_client, stream_chat
-from config.config import (
-    SMALL_MODEL_NAME, SMALL_MODEL_TEMPERATURE, SMALL_MODEL_MAX_TOKENS, logger,
-)
+from client import stream_chat
+from config.config import logger
+from config.runtime import build_client
 from prompts import load
 
 
@@ -101,7 +100,7 @@ def formatting_agent(data: WorkflowData) -> LaTeXPatch:
     """
     logger.info("[format] 进入格式化节点")
 
-    client = get_client()
+    client, m = build_client("formatter")
     messages = [
         {"role": "system", "content": load("formatter", "system_prompt")},
         {"role": "user", "content": load("formatter", "user_prompt",
@@ -118,10 +117,11 @@ def formatting_agent(data: WorkflowData) -> LaTeXPatch:
             logger.info("[format] 等待小模型排版 (第 %d/%d 次)...", attempt, MAX_ATTEMPTS)
             t0 = time.time()
             formatted, usage = stream_chat(
-                client, model=SMALL_MODEL_NAME,
+                client, model=m.model,
                 messages=messages,
-                temperature=SMALL_MODEL_TEMPERATURE,
-                max_tokens=SMALL_MODEL_MAX_TOKENS,
+                temperature=m.temperature,
+                max_tokens=m.max_tokens,
+                stream=m.streaming,
             )
             elapsed = time.time() - t0
             total_p_tok += usage.prompt_tokens

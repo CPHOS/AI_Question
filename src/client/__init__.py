@@ -35,6 +35,7 @@ import client.openrouter     # noqa: F401  -- side-effect: register openrouter
 
 __all__ = [
     "get_client",
+    "build_client_from_settings",
     "stream_chat",
     "UsageInfo",
     "BaseLLMClient",
@@ -48,10 +49,21 @@ def get_client() -> BaseLLMClient:
 
     通过注册中心查找并委托给 provider 自己的 `from_config()`。
     """
-    from config.config import LLM_PROVIDER
+    from config.config import SEED_LLM_PROVIDER
 
-    cls = get_provider_class(LLM_PROVIDER)
+    cls = get_provider_class(SEED_LLM_PROVIDER)
     return cls.from_config()
+
+
+def build_client_from_settings(
+    *, provider_kind: str, api_key: str, base_url: str = "",
+    timeout: int = 600, max_retries: int = 3,
+) -> BaseLLMClient:
+    """依据已解析的服务商设置构造客户端（供 :mod:`config.runtime` 使用）。"""
+    cls = get_provider_class(provider_kind)
+    return cls.from_settings(
+        api_key=api_key, base_url=base_url, timeout=timeout, max_retries=max_retries,
+    )
 
 
 def stream_chat(client: BaseLLMClient, **kwargs) -> tuple[str, UsageInfo]:

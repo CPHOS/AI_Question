@@ -10,9 +10,12 @@ import re
 
 from model.state import WorkflowData, LaTeXPatch
 from config.config import logger
-
-
-_NUMBERED_QUESTION_RE = r'[（(](\d+(?:\.\d+)*)[）)]'
+from utils.scoring import (
+    NUMBERED_QUESTION_RE as _NUMBERED_QUESTION_RE,
+    find_duplicates as _find_duplicates,
+    sum_hierarchical_scores as _sum_hierarchical_scores,
+)
+from latex.template_spec import FIGURE_WIDTH
 
 
 def _collect_placeholder_order(text: str, prefix: str) -> list[str]:
@@ -50,51 +53,6 @@ def _escape_latex_text(text: str) -> str:
         "}": r"\}",
     }
     return "".join(mapping.get(ch, ch) for ch in text)
-
-
-def _find_duplicates(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    duplicates: list[str] = []
-    for value in values:
-        if value in seen and value not in duplicates:
-            duplicates.append(value)
-        seen.add(value)
-    return duplicates
-
-
-def _sum_hierarchical_scores(scored_items: list[tuple[str, str]]) -> int:
-    """按小问层级求和：有父级分值时用父级，否则累加该子树下的可见子级分值。"""
-    duplicates = _find_duplicates([number for number, _ in scored_items])
-    if duplicates:
-        raise ValueError(f"重复的小问评分编号: {', '.join(duplicates)}")
-
-    scores: dict[str, int] = {}
-    for number, score in scored_items:
-        scores[number] = int(score)
-    if not scores:
-        return 0
-
-    children: dict[str, list[str]] = {number: [] for number in scores}
-    roots: list[str] = []
-    for number in scores:
-        parent = None
-        parts = number.split(".")
-        for depth in range(len(parts) - 1, 0, -1):
-            candidate = ".".join(parts[:depth])
-            if candidate in scores:
-                parent = candidate
-                break
-        if parent is None:
-            roots.append(number)
-        else:
-            children[parent].append(number)
-
-    def subtotal(number: str) -> int:
-        if number in scores:
-            return scores[number]
-        return sum(subtotal(child) for child in children.get(number, []))
-
-    return sum(subtotal(root) for root in roots)
 
 
 def _merge_block_math(text: str, block_order: list[str], formula_dict: dict) -> str:
@@ -135,7 +93,7 @@ def _merge_figures(text: str, fig_order: list[str], figure_dict: dict) -> tuple[
         fig_block = (
             f"\n\\begin{{figure}}[H]\n"
             f"    \\centering\n"
-            f"    \\includegraphics[width=0.55\\textwidth]{{fig/{filename}}}\n"
+            f"    \\includegraphics[width={FIGURE_WIDTH}]{{fig/{filename}}}\n"
             f"    \\caption{{{caption}}}\n"
             f"    \\label{{fig:{fig_num}}}\n"
             f"\\end{{figure}}\n"

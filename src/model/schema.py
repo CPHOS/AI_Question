@@ -4,7 +4,7 @@
 仲裁字段使用 Literal 枚举以使 LLM 工具调用 schema 包含 enum 约束，
 非法值会在 Pydantic 解析阶段直接拒绝（而非依赖运行时字符串比较兜底）。
 """
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -12,6 +12,17 @@ from pydantic import BaseModel, Field, model_validator
 # 公共枚举（其他模块可直接 import 复用，避免硬编码字符串）
 ArbiterDecisionLiteral = Literal["PASS", "RETRY_PROBLEM", "RETRY_SOLUTION", "ABORT"]
 ErrorCategoryLiteral = Literal["none", "style", "fatal"]
+
+# 由 Literal 派生的运行期合法值元组（路由 / 校验复用，避免再次硬编码字符串清单）。
+ARBITER_DECISIONS: tuple[str, ...] = get_args(ArbiterDecisionLiteral)
+ERROR_CATEGORIES: tuple[str, ...] = get_args(ErrorCategoryLiteral)
+
+# PASS 时允许的错误类别；其余裁决均要求 fatal（与 ArbiterDecision 校验规则一致）。
+PASS_ERROR_CATEGORIES: tuple[str, ...] = ("none", "style")
+
+# 状态机在「PASS + style」时注入的合成裁决：非 LLM 合法输出，仅用于报告标注，
+# 因此不在 ArbiterDecisionLiteral 中，但在此集中声明以供各处引用。
+DECISION_PASS_WITH_EDITS: str = "PASS_WITH_EDITS"
 
 
 class ArbiterDecision(BaseModel):
@@ -37,7 +48,7 @@ class ArbiterDecision(BaseModel):
     def validate_decision_category(self) -> "ArbiterDecision":
         """校验 decision 与 error_category 的合法组合。"""
         if self.decision == "PASS":
-            if self.error_category not in ("none", "style"):
+            if self.error_category not in PASS_ERROR_CATEGORIES:
                 raise ValueError("decision=PASS 时 error_category 只能是 none 或 style")
             return self
 

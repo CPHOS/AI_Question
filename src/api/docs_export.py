@@ -23,6 +23,11 @@ from pathlib import Path
 from api.app import app
 from config.config import PROJECT_ROOT, logger
 
+# 固定 ReDoc 版本（而非 ``latest``）：避免上游发布破坏性变更时离线文档静默失效，
+# 保证导出产物可复现。升级时同步更新此常量。
+_REDOC_VERSION = "2.1.5"
+_REDOC_CDN = f"https://cdn.redoc.ly/redoc/v{_REDOC_VERSION}/bundles/redoc.standalone.js"
+
 # 规范以内联方式注入（而非 spec-url 外部引用）：
 # 这样直接用 file:// 双击打开 index.html 也能正常渲染——避免 ReDoc 在浏览器
 # 中解析外部文档时触发 "process is not defined" 的报错，且无需本地 HTTP 服务。
@@ -36,7 +41,7 @@ _REDOC_HTML = """<!DOCTYPE html>
   </head>
   <body>
     <div id="redoc-container"></div>
-    <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+    <script src="__REDOC_CDN__"></script>
     <script id="openapi-spec" type="application/json">__SPEC__</script>
     <script>
       var spec = JSON.parse(document.getElementById("openapi-spec").textContent);
@@ -51,7 +56,12 @@ def _render_html(title: str, spec: dict) -> str:
     """把标题与内联 OpenAPI 规范渲染进 ReDoc HTML 模板。"""
     # 转义 ``</`` 以免 JSON 内容意外闭合 <script> 标签。
     spec_json = json.dumps(spec, ensure_ascii=False).replace("</", "<\\/")
-    return _REDOC_HTML.replace("__TITLE__", title).replace("__SPEC__", spec_json)
+    return (
+        _REDOC_HTML
+        .replace("__TITLE__", title)
+        .replace("__REDOC_CDN__", _REDOC_CDN)
+        .replace("__SPEC__", spec_json)
+    )
 
 
 def export(out_dir: Path) -> dict[str, Path]:

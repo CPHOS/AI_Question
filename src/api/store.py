@@ -24,6 +24,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# 模糊搜索使用 ``LIKE ... ESCAPE`` 配套，需与各 ``*_filter_clause`` 子句中的
+# ``ESCAPE`` 字符保持一致。
+_LIKE_ESCAPE = "\\"
+
+
+def _like_term(q: str) -> str:
+    """把用户输入转义为 LIKE 模式并用 ``%`` 包裹。
+
+    转义 LIKE 通配符 ``%`` / ``_`` 及转义字符本身，使其按字面量匹配，
+    避免用户输入中的通配符产生非预期的全表匹配。需配合 SQL 中的
+    ``ESCAPE '\\'`` 子句使用。
+    """
+    escaped = (
+        q.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+    return f"%{escaped}%"
+
+
 def hash_token(token: str) -> str:
     """计算 token 明文的 SHA-256 十六进制摘要。"""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -48,10 +68,82 @@ def get_user(user_id: str) -> Optional[dict[str, Any]]:
     return dict(row) if row else None
 
 
-def list_users() -> list[dict[str, Any]]:
-    """列出全部用户（按创建时间倒序）。"""
-    rows = db.query_all("SELECT * FROM users ORDER BY created_at DESC")
+def _user_filter_clause(q: Optional[str]) -> tuple[str, list[Any]]:
+    """构造用户模糊搜索的 WHERE 子句与参数（匹配 user_id / label，全部参数化）。"""
+    if not q:
+        return "", []
+    like = _like_term(q)
+    return (
+        " WHERE (user_id LIKE ? ESCAPE '\\' OR label LIKE ? ESCAPE '\\')",
+        [like, like],
+    )
+
+
+def list_users(
+    limit: int = 50,
+    offset: int = 0,
+    q: Optional[str] = None,
+    order: str = "DESC",
+) -> list[dict[str, Any]]:
+    """列出用户（可按 user_id / label 模糊搜索），按创建时间排序并分页。"""
+    direction = "ASC" if str(order).upper() == "ASC" else "DESC"
+    where, params = _user_filter_clause(q)
+    rows = db.query_all(
+        f"SELECT * FROM users{where} "
+        f"ORDER BY created_at {direction} LIMIT ? OFFSET ?",
+        tuple(params + [limit, offset]),
+    )
     return [dict(r) for r in rows]
+
+
+def count_users(q: Optional[str] = None) -> int:
+    """统计用户总数（可按 user_id / label 模糊搜索）。"""
+    where, params = _user_filter_clause(q)
+    row = db.query_one(f"SELECT COUNT(*) AS n FROM users{where}", tuple(params))
+    return int(row["n"]) if row else 0
+
+
+def update_user_label(user_id: str, label: str) -> bool:
+    """更新用户 label；返回是否命中一条记录。"""
+    if get_user(user_id) is None:
+        return False
+    db.execute("UPDATE users SET label = ? WHERE user_id = ?", (label, user_id))
+    return True
+
+
+def get_user_detail(user_id: str) -> Optional[dict[str, Any]]:
+    """返回用户详情（含未吊销 token 数与任务数统计）。"""
+    user = get_user(user_id)
+    if user is None:
+        return None
+    tok = db.query_one(
+        "SELECT COUNT(*) AS n FROM tokens WHERE user_id = ? AND revoked_at IS NULL",
+        (user_id,),
+    )
+    tsk = db.query_one(
+        "SELECT COUNT(*) AS n FROM tasks WHERE user_id = ?", (user_id,)
+    )
+    user["token_count"] = int(tok["n"]) if tok else 0
+    user["task_count"] = int(tsk["n"]) if tsk else 0
+    return user
+
+
+def delete_user_cascade(user_id: str) -> list[str]:
+    """删除用户及其 token、任务记录与进度事件。
+
+    返回被删除任务的 ``task_id`` 列表，供路由层据此清理磁盘产物。
+    """
+    rows = db.query_all("SELECT task_id FROM tasks WHERE user_id = ?", (user_id,))
+    task_ids = [r["task_id"] for r in rows]
+    conn = db.get_connection()
+    with db._lock:  # noqa: SLF001 - 复用同一把写锁，保证级联原子性
+        for tid in task_ids:
+            conn.execute("DELETE FROM task_events WHERE task_id = ?", (tid,))
+        conn.execute("DELETE FROM tasks WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM tokens WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
+    return task_ids
 
 
 # ============ Token ============
@@ -95,6 +187,23 @@ def insert_token_hash(
     return token_id
 
 
+def _token_filter_clause(
+    user_id: Optional[str], q: Optional[str]
+) -> tuple[str, list[Any]]:
+    """构造 token 过滤的 WHERE 子句与参数（user_id 精确 + id/label 模糊，全参数化）。"""
+    clauses: list[str] = []
+    params: list[Any] = []
+    if user_id:
+        clauses.append("user_id = ?")
+        params.append(user_id)
+    if q:
+        like = _like_term(q)
+        clauses.append("(id LIKE ? ESCAPE '\\' OR label LIKE ? ESCAPE '\\')")
+        params.extend([like, like])
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
 def resolve_token(plain: str) -> Optional[dict[str, Any]]:
     """按明文解析未吊销的 token，返回其元数据（含 user_id / role）。"""
     row = db.query_one(
@@ -104,20 +213,33 @@ def resolve_token(plain: str) -> Optional[dict[str, Any]]:
     return dict(row) if row else None
 
 
-def list_tokens(user_id: Optional[str] = None) -> list[dict[str, Any]]:
-    """列出 token 元数据（不含明文与哈希）。"""
-    if user_id:
-        rows = db.query_all(
-            "SELECT id, user_id, role, label, created_at, revoked_at "
-            "FROM tokens WHERE user_id = ? ORDER BY created_at DESC",
-            (user_id,),
-        )
-    else:
-        rows = db.query_all(
-            "SELECT id, user_id, role, label, created_at, revoked_at "
-            "FROM tokens ORDER BY created_at DESC"
-        )
+def list_tokens(
+    user_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    q: Optional[str] = None,
+    order: str = "DESC",
+) -> list[dict[str, Any]]:
+    """列出 token 元数据（不含明文与哈希）。
+
+    可按 ``user_id`` 过滤、按 ``q`` 模糊搜索（匹配 token id / label），并按创建时间
+    排序分页。
+    """
+    direction = "ASC" if str(order).upper() == "ASC" else "DESC"
+    where, params = _token_filter_clause(user_id, q)
+    rows = db.query_all(
+        "SELECT id, user_id, role, label, created_at, revoked_at "
+        f"FROM tokens{where} ORDER BY created_at {direction} LIMIT ? OFFSET ?",
+        tuple(params + [limit, offset]),
+    )
     return [dict(r) for r in rows]
+
+
+def count_tokens(user_id: Optional[str] = None, q: Optional[str] = None) -> int:
+    """统计 token 总数（可按 user_id 过滤、按 q 模糊搜索）。"""
+    where, params = _token_filter_clause(user_id, q)
+    row = db.query_one(f"SELECT COUNT(*) AS n FROM tokens{where}", tuple(params))
+    return int(row["n"]) if row else 0
 
 
 def revoke_token(token_id: str) -> bool:
@@ -141,12 +263,20 @@ def has_admin() -> bool:
 
 # ============ 任务 ============
 
-def create_task(task_id: str, user_id: str, mode: str, topic: str, total_score: int) -> None:
-    """登记一个新任务（初始状态 ``queued``）。"""
+def create_task(
+    task_id: str, user_id: str, mode: str, topic: str, total_score: int,
+    *, difficulty: str = "", source_material: str = "",
+) -> None:
+    """登记一个新任务（初始状态 ``queued``）。
+
+    ``difficulty`` 与 ``source_material`` 一并持久化，使失败 / 中止的任务可被
+    ``POST /api/tasks/{id}/retry`` 以原输入克隆重跑。
+    """
     db.execute(
-        "INSERT INTO tasks (task_id, user_id, status, mode, topic, total_score, created_at) "
-        "VALUES (?, ?, 'queued', ?, ?, ?, ?)",
-        (task_id, user_id, mode, topic, total_score, _now()),
+        "INSERT INTO tasks "
+        "(task_id, user_id, status, mode, topic, difficulty, source_material, total_score, created_at) "
+        "VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+        (task_id, user_id, mode, topic, difficulty, source_material, total_score, _now()),
     )
 
 
@@ -220,21 +350,108 @@ def get_task(task_id: str) -> Optional[dict[str, Any]]:
     return data
 
 
-def list_tasks(user_id: Optional[str] = None, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
-    """列出任务（可按用户过滤），按创建时间倒序分页。"""
+_TASK_LIST_COLS = (
+    "task_id, user_id, status, mode, topic, total_score, created_at, finished_at, error"
+)
+
+
+def _task_filter_clause(
+    user_id: Optional[str],
+    statuses: Optional[list[str]],
+    mode: Optional[str],
+    q: Optional[str],
+) -> tuple[str, list[Any]]:
+    """构造任务过滤的 WHERE 子句与参数（全部参数化，防注入）。"""
+    clauses: list[str] = []
+    params: list[Any] = []
     if user_id:
-        rows = db.query_all(
-            "SELECT task_id, user_id, status, mode, topic, total_score, created_at, finished_at, error "
-            "FROM tasks WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (user_id, limit, offset),
-        )
-    else:
-        rows = db.query_all(
-            "SELECT task_id, user_id, status, mode, topic, total_score, created_at, finished_at, error "
-            "FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        )
+        clauses.append("user_id = ?")
+        params.append(user_id)
+    if statuses:
+        placeholders = ", ".join("?" for _ in statuses)
+        clauses.append(f"status IN ({placeholders})")
+        params.extend(statuses)
+    if mode:
+        clauses.append("mode = ?")
+        params.append(mode)
+    if q:
+        clauses.append("topic LIKE ? ESCAPE '\\'")
+        params.append(_like_term(q))
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def list_tasks(
+    user_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    statuses: Optional[list[str]] = None,
+    mode: Optional[str] = None,
+    q: Optional[str] = None,
+    order: str = "DESC",
+) -> list[dict[str, Any]]:
+    """列出任务（可按用户 / 状态 / 模式 / 主题过滤），按创建时间排序分页。"""
+    direction = "ASC" if str(order).upper() == "ASC" else "DESC"
+    where, params = _task_filter_clause(user_id, statuses, mode, q)
+    rows = db.query_all(
+        f"SELECT {_TASK_LIST_COLS} FROM tasks{where} "
+        f"ORDER BY created_at {direction} LIMIT ? OFFSET ?",
+        tuple(params + [limit, offset]),
+    )
     return [dict(r) for r in rows]
+
+
+def count_tasks(
+    user_id: Optional[str] = None,
+    statuses: Optional[list[str]] = None,
+    mode: Optional[str] = None,
+    q: Optional[str] = None,
+) -> int:
+    """统计满足过滤条件的任务总数。"""
+    where, params = _task_filter_clause(user_id, statuses, mode, q)
+    row = db.query_one(f"SELECT COUNT(*) AS n FROM tasks{where}", tuple(params))
+    return int(row["n"]) if row else 0
+
+
+def admin_stats() -> dict[str, Any]:
+    """聚合管理端概览统计：任务 / 用户 / token / 用量与费用。"""
+    status_rows = db.query_all(
+        "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
+    )
+    status_counts = {r["status"]: int(r["n"]) for r in status_rows}
+    task_total = sum(status_counts.values())
+
+    active_tokens_row = db.query_one(
+        "SELECT COUNT(*) AS n FROM tokens WHERE revoked_at IS NULL"
+    )
+    active_token_count = int(active_tokens_row["n"]) if active_tokens_row else 0
+
+    # token 用量与费用存于各任务的 summary_json，需遍历汇总。
+    total_tokens = 0
+    total_cost = 0.0
+    summ_rows = db.query_all(
+        "SELECT summary_json FROM tasks WHERE summary_json IS NOT NULL"
+    )
+    for r in summ_rows:
+        try:
+            summary = json.loads(r["summary_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        usage = summary.get("token_usage") or {}
+        if isinstance(usage, dict):
+            total_tokens += int(usage.get("total_tokens", 0) or 0)
+        cost = summary.get("api_cost_usd")
+        if isinstance(cost, (int, float)):
+            total_cost += float(cost)
+
+    return {
+        "task_total": task_total,
+        "task_status_counts": status_counts,
+        "user_count": count_users(),
+        "active_token_count": active_token_count,
+        "token_usage_total": total_tokens,
+        "api_cost_usd_total": round(total_cost, 6),
+    }
 
 
 def delete_task(task_id: str) -> None:
@@ -252,7 +469,7 @@ def mark_interrupted_running() -> int:
     with db._lock:  # noqa: SLF001 - 复用同一把写锁
         cur = conn.execute(
             "UPDATE tasks SET status = 'interrupted' "
-            "WHERE status IN ('running', 'queued')"
+            "WHERE status IN ('running', 'queued', 'aborting')"
         )
         conn.commit()
         return cur.rowcount

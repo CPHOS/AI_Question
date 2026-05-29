@@ -11,6 +11,22 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
+# ============ 输入默认值与约束（全局单一事实来源） ============
+# 这些常量被 normalizer / planner / API schema / 路由表单等多处复用，避免
+# 难度串与分值默认 / 范围在各文件重复硬编码。
+DEFAULT_DIFFICULTY: str = "国家集训队"
+DEFAULT_TOTAL_SCORE: int = 40          # CPhO 决赛单题主流分值
+MIN_TOTAL_SCORE: int = 20
+MAX_TOTAL_SCORE: int = 80
+
+# 总分分档边界（命题规模引导 / 难度档推断共用）：
+#   total_score < SCORE_TIER_LOW          → 低档
+#   SCORE_TIER_LOW <= total_score <= SCORE_TIER_MID → 中档
+#   total_score > SCORE_TIER_MID          → 高档
+SCORE_TIER_LOW: int = 40
+SCORE_TIER_MID: int = 60
+
+
 class QuestionMode(str, Enum):
     """命题模式。
 
@@ -65,11 +81,11 @@ class TaskSpec(BaseModel):
         description="源材料：文献摘要、原题内容或思路描述（改编类模式使用）",
     )
     difficulty: str = Field(
-        default="国家集训队",
+        default=DEFAULT_DIFFICULTY,
         description="难度等级描述",
     )
     total_score: int = Field(
-        default=40, ge=20, le=80,
+        default=DEFAULT_TOTAL_SCORE, ge=MIN_TOTAL_SCORE, le=MAX_TOTAL_SCORE,
         description="题目总分（CPhO 决赛单题主流分值为 40）",
     )
     difficulty_profile: DifficultyProfile = Field(

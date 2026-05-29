@@ -14,20 +14,20 @@ import time
 
 from model.state import WorkflowData
 from model.stats import record
-from client import get_client, stream_chat
-from config.config import (
-    BIG_MODEL_NAME, BIG_MODEL_TEMPERATURE, BIG_MODEL_MAX_TOKENS, logger,
-)
+from client import stream_chat
+from config.config import logger
+from config.runtime import build_client
 from prompts import load
+from spec.task import SCORE_TIER_LOW, SCORE_TIER_MID
 from utils.retry_context import build_problem_retry_context
 from utils.title import extract_leading_title, infer_title_from_content, is_noisy_title
 
 
 def _score_tier(total_score: int) -> str:
     """根据总分选择对应的分数段命题规模引导 key。"""
-    if total_score < 40:
+    if total_score < SCORE_TIER_LOW:
         return "score_guidance_low"
-    elif total_score <= 60:
+    elif total_score <= SCORE_TIER_MID:
         return "score_guidance_mid"
     else:
         return "score_guidance_high"
@@ -70,7 +70,7 @@ def problem_generator_agent(data: WorkflowData) -> dict:
     retry = data.get("problem_retry_count", 0)
     logger.info("[problem_gen] 进入命题生成节点 | retry=%d", retry)
 
-    client = get_client()
+    client, m = build_client("problem_generator")
     total_score = data["total_score"]
 
     score_guidance = load("problem_generator", _score_tier(total_score),
@@ -114,10 +114,11 @@ def problem_generator_agent(data: WorkflowData) -> dict:
     logger.info("[problem_gen] mode=%s | 正在等待 thinking model...", mode)
     t0 = time.time()
     content, usage = stream_chat(
-        client, model=BIG_MODEL_NAME,
+        client, model=m.model,
         messages=messages,
-        temperature=BIG_MODEL_TEMPERATURE,
-        max_tokens=BIG_MODEL_MAX_TOKENS,
+        temperature=m.temperature,
+        max_tokens=m.max_tokens,
+        stream=m.streaming,
     )
     elapsed = time.time() - t0
     logger.info(
