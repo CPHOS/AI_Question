@@ -82,6 +82,51 @@ def from_cli(
     return _spec_to_workflow_data(spec)
 
 
+def from_api(
+    *,
+    topic: str = "",
+    source_material: str = "",
+    difficulty: str = "国家集训队",
+    total_score: int = 40,
+    mode: str | None = None,
+) -> WorkflowData:
+    """从 API 请求参数构造 WorkflowData。
+
+    与 :func:`from_cli` 的区别在于源材料以文本直接传入（而非文件路径），
+    适配后端 HTTP 提交场景。
+
+    Args:
+        topic: 物理主题。
+        source_material: 源材料文本（改编类模式使用）。
+        difficulty: 难度等级描述。
+        total_score: 题目总分。
+        mode: 命题模式；留空时按是否提供 source_material 推断。
+
+    Returns:
+        可供状态机直接执行的初始 :class:`~model.state.WorkflowData`。
+    """
+    if mode:
+        question_mode = QuestionMode(mode)
+    elif source_material:
+        question_mode = QuestionMode.LITERATURE_ADAPTATION
+    else:
+        question_mode = QuestionMode.TOPIC_GENERATION
+
+    spec = TaskSpec(
+        mode=question_mode,
+        topic=topic,
+        source_material=source_material,
+        difficulty=difficulty,
+        total_score=total_score,
+        difficulty_profile=_infer_difficulty_profile(total_score),
+    )
+
+    logger.info("[normalizer] API 输入规格化完成 | mode=%s topic=%s score=%d",
+                spec.mode.value, spec.topic[:40], spec.total_score)
+
+    return _spec_to_workflow_data(spec)
+
+
 def from_json(filepath: str) -> WorkflowData:
     """从 JSON 文件加载任务。"""
     p = Path(filepath)

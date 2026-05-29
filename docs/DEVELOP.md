@@ -118,6 +118,52 @@ INIT -> PLANNING -> PROBLEM_GENERATING -> SOLUTION_GENERATING
 
 新增 provider 时，定义 `BaseLLMClient` 子类并使用 `@register_provider("name")` 注册，再在 `client.__init__` 中导入该模块以触发注册。
 
+## 后端 API
+
+`src/api` 提供基于 FastAPI 的多用户后端，复用 `app.runner.execute_task` 这一与 CLI
+共用的执行入口。
+
+| 模块 | 职责 |
+| --- | --- |
+| `api.db` | SQLite 连接（单例 + 写锁）与建表 |
+| `api.store` | 用户 / token / 任务仓储；token 仅存 SHA-256 哈希 |
+| `api.auth` | Bearer token 鉴权依赖（`require_user` / `require_admin`） |
+| `api.jobs` | 线程池任务执行器，受 `MAX_CONCURRENT_JOBS` 限制；产物写入 `OUTPUT_DIR/{user_id}` |
+| `api.progress` | 把状态机各阶段产出格式化为面向用户的结构化进度快照 |
+| `api.schemas` | 请求 / 响应 pydantic 模型（OpenAPI 文档数据源） |
+| `api.routes_tasks` / `api.routes_admin` | 用户任务与管理路由 |
+| `api.app` | 应用工厂、lifespan（建库 / 引导 admin / 启停执行器）、`run()` 入口 |
+| `api.docs_export` | 导出 OpenAPI 规范与 ReDoc 页面到 `docs/api` |
+
+要点：
+
+- **鉴权与角色**：token 为随机不透明串，明文仅创建时返回一次；角色分 `user` / `admin`，
+  管理员拥有全权限（可访问 / 下载 / 删除任意用户的任务与产物）。首个管理员通过
+  `ADMIN_BOOTSTRAP_TOKEN` 引导。
+- **异步任务**：`POST /api/tasks` 提交后立即返回 `task_id`，任务在线程池后台执行，
+  客户端轮询 `GET /api/tasks/{id}` 获取状态与摘要，再下载产物。
+- **节点级进度**：状态机通过 `on_phase(phase, status, data)` 回调上报阶段事件
+  （`running` / `completed`），由 `api.jobs` 落库到 `task_events` 表，并更新
+  `tasks.phase`。客户端轮询 `GET /api/tasks/{id}/progress` 获取阶段时间线；
+  每个 `completed` 事件携带由 `api.progress` 按阶段类型格式化的**结构化产出快照**
+  （而非模型原始输出），长文本会截断并标注。回调链路两层容错（状态机 `_emit`
+  与 jobs sink 均吞异常），进度上报失败绝不影响生成主流程。
+- **产物隔离**：产物按 `OUTPUT_DIR/{user_id}/{task_id}_*` 落盘；下载端点做归属校验
+  与目录穿越防护。
+- **文档自动生成**：运行时 `/docs`、`/redoc`、`/openapi.json` 实时暴露规范；
+  `uv run physics-api-docs` 把同一份规范固化到 `docs/api`。
+
+## 运行统计与并发隔离
+
+`model.stats` 使用 `contextvars.ContextVar` 持有每个任务独立的统计字典，而非进程级
+全局单例。`record / get_all / get_total_tokens / clear` 的签名保持不变，各 Agent 无需
+改动；`run_context()` 上下文管理器在任务边界绑定独立统计字典，`app.runner.execute_task`
+在每次执行时进入该上下文，因此 API 后端可并发执行多个任务而统计互不串扰。
+
+由于 `ThreadPoolExecutor` 默认不向工作线程传播 `ContextVar`，需要在工作线程内写入
+统计的代码（如 `agents.reviewers.run_reviews` 的并行审核）使用
+`contextvars.copy_context().run(fn, *args)` 提交任务。
+
 ## 提示词
 
 提示词存放在 `src/prompts/*.yaml` 中，通过 `prompts.load(agent, key, **kwargs)` 读取。变量替换仅替换显式传入的 `{key}`，不会处理未传入的花括号，因此 LaTeX 花括号可以保留在提示词模板中。
@@ -175,6 +221,11 @@ INIT -> PLANNING -> PROBLEM_GENERATING -> SOLUTION_GENERATING
 | `AUTO_COMPILE_LATEX` | 是否自动编译最终题目 LaTeX；CI 或无模板环境可关闭 | `false` |
 | `CPHOS_TEMPLATE_DIR` | `cphos.cls` 与配套样式所在目录；相对路径按项目根目录解析 | `../CPHOS-Latex/theory` |
 | `OUTPUT_DIR` | 输出目录 | `output` |
+| `API_HOST` | API 服务监听地址 | `0.0.0.0` |
+| `API_PORT` | API 服务端口 | `8000` |
+| `MAX_CONCURRENT_JOBS` | 同时执行的生成任务上限 | `1` |
+| `DB_PATH` | 用户 / token / 任务元数据 SQLite 路径（相对按项目根解析） | `data/api.db` |
+| `ADMIN_BOOTSTRAP_TOKEN` | 引导管理员 token 明文（首次启动且无 admin 时写入哈希） | 空 |
 
 `.env.example` 是配置模板，开发环境中的 `.env` 不应提交到仓库。
 
@@ -187,9 +238,11 @@ AI_Question/
 |-- .env.example
 |-- docs/
 |   |-- DEVELOP.md
-|   `-- TESTING.md
+|   |-- TESTING.md
+|   `-- api/                  # 后端 API 文档（README + 自动生成的 OpenAPI/ReDoc）
 |-- src/
-|   |-- app/                 # CLI 和输出写入
+|   |-- app/                 # CLI、产物写盘（outputs）与共用执行入口（runner）
+|   |-- api/                 # FastAPI 后端：鉴权、持久化、任务执行、路由
 |   |-- agents/              # 命题、解题、审核、仲裁 Agent
 |   |-- client/              # LLM 客户端与 provider 注册
 |   |-- config/              # 环境变量配置
@@ -200,6 +253,10 @@ AI_Question/
 |   |-- spec/                # 输入规格化与源材料加载
 |   `-- utils/               # 通用文本与重试上下文工具
 `-- tests/
+    |-- test_api.py
+    |-- test_auth.py
+    |-- test_progress.py
+    |-- test_stats_context.py
     |-- test_format.py
     |-- test_merger.py
     |-- test_outputs.py

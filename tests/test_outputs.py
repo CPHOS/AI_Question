@@ -1,20 +1,20 @@
 import os
 import subprocess
 
-from app import (
-    _append_test_log,
+from app import _append_test_log
+from app.outputs import (
     _build_texinputs,
     _build_tikz_stub,
     _resolve_template_dir,
     _run_latex_compile,
-    _write_outputs,
+    _rewrite_figure_asset_paths,
+    write_outputs,
 )
 from model.stats import clear, record
 
 
 def test_write_outputs_creates_tikz_stub(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.OUTPUT_DIR", tmp_path)
-    monkeypatch.setattr("app.AUTO_COMPILE_FIGURES", False)
+    monkeypatch.setattr("app.outputs.AUTO_COMPILE_FIGURES", False)
     state = {
         "figure_descriptions": {
             "fig_1": {
@@ -26,7 +26,7 @@ def test_write_outputs_creates_tikz_stub(tmp_path, monkeypatch):
         }
     }
 
-    paths = _write_outputs("task", state)
+    paths = write_outputs("task", state, tmp_path)
 
     tikz_path = tmp_path / "task_assets" / "fig1.tex"
     readme_path = tmp_path / "task_assets" / "README.md"
@@ -58,9 +58,8 @@ def test_build_tikz_stub_uses_lc_cell_for_t_model():
 
 
 def test_write_outputs_rewrites_figure_asset_path(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.OUTPUT_DIR", tmp_path)
-    monkeypatch.setattr("app.AUTO_COMPILE_FIGURES", False)
-    monkeypatch.setattr("app.AUTO_COMPILE_LATEX", False)
+    monkeypatch.setattr("app.outputs.AUTO_COMPILE_FIGURES", False)
+    monkeypatch.setattr("app.outputs.AUTO_COMPILE_LATEX", False)
     state = {
         "final_latex": (
             "\\begin{problem}[10]{测试}\n"
@@ -83,7 +82,7 @@ def test_write_outputs_rewrites_figure_asset_path(tmp_path, monkeypatch):
         },
     }
 
-    paths = _write_outputs("taskabc", state)
+    paths = write_outputs("taskabc", state, tmp_path)
     final_tex = paths["final_latex"].read_text(encoding="utf-8")
 
     assert "插图 PDF 未生成：fig1.pdf" in final_tex
@@ -91,9 +90,8 @@ def test_write_outputs_rewrites_figure_asset_path(tmp_path, monkeypatch):
 
 
 def test_write_outputs_rewrites_figure_asset_path_when_pdf_exists(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.OUTPUT_DIR", tmp_path)
-    monkeypatch.setattr("app.AUTO_COMPILE_FIGURES", False)
-    monkeypatch.setattr("app.AUTO_COMPILE_LATEX", False)
+    monkeypatch.setattr("app.outputs.AUTO_COMPILE_FIGURES", False)
+    monkeypatch.setattr("app.outputs.AUTO_COMPILE_LATEX", False)
     state = {
         "final_latex": (
             "\\begin{problem}[10]{测试}\n"
@@ -119,8 +117,6 @@ def test_write_outputs_rewrites_figure_asset_path_when_pdf_exists(tmp_path, monk
     assets_dir.mkdir()
     (assets_dir / "fig1.pdf").write_bytes(b"%PDF-1.4\n")
 
-    from app import _rewrite_figure_asset_paths
-
     final_tex = _rewrite_figure_asset_paths(
         state["final_latex"],
         "taskabc",
@@ -136,7 +132,7 @@ def test_resolve_template_dir_relative_to_project_root(tmp_path, monkeypatch):
     template_dir = tmp_path / "CPHOS-Latex" / "theory"
     project_root.mkdir()
     template_dir.mkdir(parents=True)
-    monkeypatch.setattr("app.PROJECT_ROOT", project_root)
+    monkeypatch.setattr("app.outputs.PROJECT_ROOT", project_root)
 
     result = _resolve_template_dir("../CPHOS-Latex/theory")
 
@@ -153,12 +149,12 @@ def test_run_latex_compile_reports_timeout(tmp_path, monkeypatch):
     tex_path = tmp_path / "fig1.tex"
     tex_path.write_text("\\documentclass{standalone}\\begin{document}x\\end{document}", encoding="utf-8")
 
-    monkeypatch.setattr("app.shutil.which", lambda name: "xelatex")
+    monkeypatch.setattr("app.outputs.shutil.which", lambda name: "xelatex")
 
     def _timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
 
-    monkeypatch.setattr("app.subprocess.run", _timeout)
+    monkeypatch.setattr("app.outputs.subprocess.run", _timeout)
 
     ok, detail = _run_latex_compile(tex_path)
 
@@ -171,12 +167,12 @@ def test_run_latex_compile_reports_start_failure(tmp_path, monkeypatch):
     tex_path = tmp_path / "fig1.tex"
     tex_path.write_text("\\documentclass{standalone}\\begin{document}x\\end{document}", encoding="utf-8")
 
-    monkeypatch.setattr("app.shutil.which", lambda name: "xelatex")
+    monkeypatch.setattr("app.outputs.shutil.which", lambda name: "xelatex")
 
     def _start_failure(*args, **kwargs):
         raise OSError("denied")
 
-    monkeypatch.setattr("app.subprocess.run", _start_failure)
+    monkeypatch.setattr("app.outputs.subprocess.run", _start_failure)
 
     ok, detail = _run_latex_compile(tex_path)
 

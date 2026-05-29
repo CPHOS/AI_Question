@@ -172,3 +172,110 @@ class TestStateMachineRouting:
         from model.stats import get_all as _get_stats
         arb_keys = sorted(k for k in _get_stats() if k.startswith("arbiter_r"))
         assert arb_keys == ["arbiter_r1", "arbiter_r2", "arbiter_r3", "arbiter_r4"]
+
+
+class TestProgressCallback:
+    """测试 run() 的节点级进度回调。"""
+
+    @patch("latex.format.stream_chat")
+    @patch("latex.format.get_client")
+    @patch("agents.arbiter.get_client")
+    @patch("agents.reviewers.stream_chat")
+    @patch("agents.reviewers.get_client")
+    @patch("agents.solution_generator.stream_chat")
+    @patch("agents.solution_generator.get_client")
+    @patch("agents.problem_generator.stream_chat")
+    @patch("agents.problem_generator.get_client")
+    @patch("spec.planner.stream_chat")
+    @patch("spec.planner.get_client")
+    def test_on_phase_emits_running_and_completed(
+        self, mock_plan_client, mock_plan_chat,
+        mock_prob_client, mock_prob_chat,
+        mock_sol_client, mock_sol_chat,
+        mock_rev_client, mock_rev_chat,
+        mock_arb_client,
+        mock_fmt_client, mock_fmt_chat,
+    ):
+        """PASS 路径应按顺序触发各阶段的 running/completed 事件。"""
+        mock_plan_chat.return_value = ("规划", _ZERO_USAGE)
+        mock_prob_chat.return_value = (
+            '【标题】测试题\n【题干】\n(1) 第一问\n', _ZERO_USAGE,
+        )
+        mock_sol_chat.return_value = (
+            '(1)[50分]\n<block_math label="eq:1" score="20">F=ma</block_math>\n',
+            _ZERO_USAGE,
+        )
+        mock_rev_chat.return_value = ("审核意见", _ZERO_USAGE)
+        mock_arb_client.return_value.create.return_value = _make_tool_call_response(
+            "PASS", "无需修改"
+        )
+        mock_fmt_chat.return_value = (
+            "\\documentclass[answer]{cphos}\n\\begin{document}\n"
+            "\\begin{problem}{测试}\n\\begin{problemstatement}\n题\n"
+            "\\end{problemstatement}\n\\begin{solution}\n{{BLOCK_MATH_1}}\n"
+            "\\end{solution}\n\\end{problem}\n\\end{document}",
+            _ZERO_USAGE,
+        )
+
+        events: list[tuple[str, str]] = []
+
+        def _sink(phase, status, data):
+            events.append((phase, status))
+
+        sm = build_graph()
+        sm.run(_make_initial_state(), on_phase=_sink)
+
+        # 每个阶段都应成对出现 running → completed
+        phases = [p for p, s in events]
+        for phase in ("PLANNING", "PROBLEM_GENERATING", "SOLUTION_GENERATING",
+                      "REVIEWING", "ARBITRATING", "FORMATTING", "TEMPLATE_FIXING", "DONE"):
+            assert (phase, "running") in events or phase == "DONE"
+            assert (phase, "completed") in events
+        # 顺序正确：PLANNING 在 REVIEWING 之前
+        assert phases.index("PLANNING") < phases.index("REVIEWING")
+
+    @patch("latex.format.stream_chat")
+    @patch("latex.format.get_client")
+    @patch("agents.arbiter.get_client")
+    @patch("agents.reviewers.stream_chat")
+    @patch("agents.reviewers.get_client")
+    @patch("agents.solution_generator.stream_chat")
+    @patch("agents.solution_generator.get_client")
+    @patch("agents.problem_generator.stream_chat")
+    @patch("agents.problem_generator.get_client")
+    @patch("spec.planner.stream_chat")
+    @patch("spec.planner.get_client")
+    def test_faulty_callback_does_not_break_run(
+        self, mock_plan_client, mock_plan_chat,
+        mock_prob_client, mock_prob_chat,
+        mock_sol_client, mock_sol_chat,
+        mock_rev_client, mock_rev_chat,
+        mock_arb_client,
+        mock_fmt_client, mock_fmt_chat,
+    ):
+        """回调抛异常不应中断生成流程（容错性）。"""
+        mock_plan_chat.return_value = ("规划", _ZERO_USAGE)
+        mock_prob_chat.return_value = ('【标题】X\n【题干】\n(1) 问\n', _ZERO_USAGE)
+        mock_sol_chat.return_value = (
+            '(1)[50分]\n<block_math label="eq:1" score="20">F=ma</block_math>\n',
+            _ZERO_USAGE,
+        )
+        mock_rev_chat.return_value = ("审核", _ZERO_USAGE)
+        mock_arb_client.return_value.create.return_value = _make_tool_call_response(
+            "PASS", "ok"
+        )
+        mock_fmt_chat.return_value = (
+            "\\documentclass[answer]{cphos}\n\\begin{document}\n"
+            "\\begin{problem}{X}\n\\begin{problemstatement}\n题\n"
+            "\\end{problemstatement}\n\\begin{solution}\n{{BLOCK_MATH_1}}\n"
+            "\\end{solution}\n\\end{problem}\n\\end{document}",
+            _ZERO_USAGE,
+        )
+
+        def _bad_sink(phase, status, data):
+            raise RuntimeError("boom")
+
+        sm = build_graph()
+        result = sm.run(_make_initial_state(), on_phase=_bad_sink)
+        assert result["arbiter_decision"] == "PASS"
+        assert sm.phase == Phase.DONE

@@ -20,9 +20,14 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum, auto
+from typing import Callable, Optional
 
 from model.state import WorkflowData
 from config.config import MAX_RETRY_COUNT, logger
+
+# 进度回调签名：(phase_name, status, data) -> None
+# status 取值 "running"（进入阶段）/ "completed"（阶段产出就绪）。
+PhaseCallback = Callable[[str, str, WorkflowData], None]
 
 
 class Phase(Enum):
@@ -50,6 +55,7 @@ class GenerationStateMachine:
     def __init__(self):
         self._phase: Phase = Phase.INIT
         self._start_time: float = 0.0
+        self._on_phase: Optional[PhaseCallback] = None
 
     @property
     def phase(self) -> Phase:
@@ -59,6 +65,24 @@ class GenerationStateMachine:
         """执行阶段转移并记录日志。"""
         logger.info("阶段转移: %s → %s", self._phase.name, to.name)
         self._phase = to
+
+    def _emit(self, phase: Phase, status: str, data: WorkflowData) -> None:
+        """向进度回调发出一次阶段事件（容错：回调异常不影响主流程）。"""
+        if self._on_phase is None:
+            return
+        try:
+            self._on_phase(phase.name, status, data)
+        except Exception:  # noqa: BLE001 - 进度上报失败绝不打断生成
+            logger.warning("[workflow] 进度回调异常，已忽略", exc_info=True)
+
+    def _enter(self, phase: Phase, data: WorkflowData) -> None:
+        """进入某阶段：转移 + 发出 running 事件。"""
+        self._transition(phase)
+        self._emit(phase, "running", data)
+
+    def _done(self, phase: Phase, data: WorkflowData) -> None:
+        """某阶段产出就绪：发出 completed 事件。"""
+        self._emit(phase, "completed", data)
 
     # ------------------------------------------------------------------
     # 路由
@@ -153,8 +177,15 @@ class GenerationStateMachine:
     # 主流程
     # ------------------------------------------------------------------
 
-    def run(self, data: WorkflowData) -> WorkflowData:
-        """驱动完整的生成工作流。"""
+    def run(self, data: WorkflowData, on_phase: Optional[PhaseCallback] = None) -> WorkflowData:
+        """驱动完整的生成工作流。
+
+        Args:
+            data: 初始工作流数据。
+            on_phase: 可选的进度回调，在每个阶段进入（``running``）与产出就绪
+                （``completed``）时被调用，用于上报节点级进度。回调内部异常会
+                被吞掉，不影响生成流程。
+        """
         from spec.planner import run_planning
         from agents.problem_generator import problem_generator_agent
         from agents.solution_generator import solution_generator_agent
@@ -165,25 +196,29 @@ class GenerationStateMachine:
         from latex.merge import merge
         from latex.template_agent import fix_template
 
+        self._on_phase = on_phase
         self._start_time = time.monotonic()
         data = dict(data)  # 允许修改
 
         try:
             # ===== 命题规划 =====
-            self._transition(Phase.PLANNING)
+            self._enter(Phase.PLANNING, data)
             data.update(run_planning(data))
+            self._done(Phase.PLANNING, data)
 
             need_problem = True
 
             while True:
                 # ===== 命题生成 =====
                 if need_problem:
-                    self._transition(Phase.PROBLEM_GENERATING)
+                    self._enter(Phase.PROBLEM_GENERATING, data)
                     data.update(problem_generator_agent(data))
+                    self._done(Phase.PROBLEM_GENERATING, data)
 
                 # ===== 解题生成 =====
-                self._transition(Phase.SOLUTION_GENERATING)
+                self._enter(Phase.SOLUTION_GENERATING, data)
                 data.update(solution_generator_agent(data))
+                self._done(Phase.SOLUTION_GENERATING, data)
 
                 # 合并 problem_text + solution_text 供审核
                 data["draft_content"] = (
@@ -193,12 +228,14 @@ class GenerationStateMachine:
                 )
 
                 # ===== 并行审核 =====
-                self._transition(Phase.REVIEWING)
+                self._enter(Phase.REVIEWING, data)
                 data.update(run_reviews(data))
+                self._done(Phase.REVIEWING, data)
 
                 # ===== 仲裁 =====
-                self._transition(Phase.ARBITRATING)
+                self._enter(Phase.ARBITRATING, data)
                 data.update(arbiter_agent(data))
+                self._done(Phase.ARBITRATING, data)
 
                 # ===== 路由 =====
                 route = self._route(data)
@@ -209,6 +246,7 @@ class GenerationStateMachine:
                     break
                 elif route == "abort":
                     self._transition(Phase.ABORTED)
+                    self._emit(Phase.ABORTED, "completed", data)
                     return data
                 elif route == "end":
                     return data
@@ -219,22 +257,26 @@ class GenerationStateMachine:
                     need_problem = True
 
             # ===== LaTeX 后处理流水线 =====
-            self._transition(Phase.FORMATTING)
+            self._enter(Phase.FORMATTING, data)
             data.update(isolate(data))
             data.update(formatting_agent(data))
             data.update(merge(data))
+            self._done(Phase.FORMATTING, data)
 
             # ===== 模板修正 =====
-            self._transition(Phase.TEMPLATE_FIXING)
+            self._enter(Phase.TEMPLATE_FIXING, data)
             data.update(fix_template(data))
+            self._done(Phase.TEMPLATE_FIXING, data)
 
             self._transition(Phase.DONE)
+            self._emit(Phase.DONE, "completed", data)
             elapsed = time.monotonic() - self._start_time
             logger.info("生成完成，总耗时 %.2f 秒", elapsed)
             return data
 
         except Exception:
             self._transition(Phase.ERROR)
+            self._emit(Phase.ERROR, "completed", data)
             elapsed = time.monotonic() - self._start_time
             logger.exception("生成流程出错 (已耗时 %.2f 秒)", elapsed)
             raise

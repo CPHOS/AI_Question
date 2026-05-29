@@ -98,8 +98,30 @@ physics-generator --topic TEXT           # 物理主题（与 --input/--adapt �
 
 ---
 
-## 输出文件
+## API 服务
 
+除 CLI 外，系统提供基于 FastAPI 的后端 API，支持多用户、Token 鉴权、异步任务与
+历史产物管理。
+
+```bash
+# 1. 在 .env 中配置 API_HOST / API_PORT / MAX_CONCURRENT_JOBS / DB_PATH / ADMIN_BOOTSTRAP_TOKEN
+# 2. 启动服务
+uv run physics-api
+# 或开发模式
+uv run uvicorn api.app:app --reload
+```
+
+- 鉴权：所有 `/api/**` 端点需 `Authorization: Bearer <token>`；token 由管理员通过
+  `/api/admin/tokens` 签发并手动分发。
+- 工作流：`POST /api/tasks` 提交 → 轮询 `GET /api/tasks/{id}` → 下载产物。
+- 在线文档：运行后访问 `/docs`（Swagger）或 `/redoc`；离线文档见 [`docs/api`](docs/api)。
+- 重新生成 API 文档：`uv run physics-api-docs`。
+
+完整端点、鉴权与示例见 [`docs/api/README.md`](docs/api/README.md)。
+
+---
+
+## 输出文件
 每次运行在 `output/` 下生成：
 
 | 文件 | 内容 |
@@ -119,6 +141,7 @@ physics-generator --topic TEXT           # 物理主题（与 --input/--adapt �
 
 - [`docs/DEVELOP.md`](docs/DEVELOP.md) — 工作流、节点职责、仲裁路由、状态数据、LLM 客户端、提示词管理、LaTeX 后处理、CPHOS 模板约定、配置项、项目结构
 - [`docs/TESTING.md`](docs/TESTING.md) — 测试目录说明、常用命令、Mock 约定和新增测试指南
+- [`docs/api/README.md`](docs/api/README.md) — 后端 API 鉴权、端点、异步工作流与产物管理（含自动生成的 OpenAPI 规范）
 
 ## 从旧版本升级
 

@@ -11,6 +11,7 @@
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from model.state import WorkflowData, ReviewOutput, ReviewPatch
 from model.stats import record
@@ -290,11 +291,13 @@ def run_reviews(data: WorkflowData) -> ReviewOutput:
     """
     logger.info("[reviewers] 启动并行审核")
 
+    # 复制当前 contextvars 上下文到每个工作线程，使线程内的 model.stats.record
+    # 写入归属于当前任务的统计上下文（ThreadPoolExecutor 默认不传播 contextvars）。
     with ThreadPoolExecutor(max_workers=4) as executor:
-        math_future = executor.submit(_math_check, dict(data))
-        phys_future = executor.submit(_physics_check, dict(data))
-        struct_future = executor.submit(_structure_check, dict(data))
-        quality_future = executor.submit(_quality_check, dict(data))
+        math_future = executor.submit(copy_context().run, _math_check, dict(data))
+        phys_future = executor.submit(copy_context().run, _physics_check, dict(data))
+        struct_future = executor.submit(copy_context().run, _structure_check, dict(data))
+        quality_future = executor.submit(copy_context().run, _quality_check, dict(data))
 
         result: ReviewOutput = {
             "math_review": "",

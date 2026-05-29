@@ -17,7 +17,7 @@ from model.schema import (
     ArbiterDecisionLiteral,
     ErrorCategoryLiteral,
 )
-from model.stats import record, get_all, get_total_tokens, clear
+from model.stats import record, get_all, get_total_tokens, clear, run_context
 
 __all__ = [
     # 整体视图
@@ -42,4 +42,5 @@ __all__ = [
     "get_all",
     "get_total_tokens",
     "clear",
+    "run_context",
 ]
