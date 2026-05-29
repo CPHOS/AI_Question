@@ -83,6 +83,17 @@ MAX_RETRY_COUNT: int = int(os.getenv("MAX_RETRY_COUNT", "3"))
 # ============ 源材料控制 ============
 SOURCE_MATERIAL_MAX_CHARS: int = int(os.getenv("SOURCE_MATERIAL_MAX_CHARS", "60000"))
 
+# ============ API 后端服务 ============
+API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
+API_PORT: int = int(os.getenv("API_PORT", "8000"))
+# 同时执行的生成任务上限
+MAX_CONCURRENT_JOBS: int = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
+# 用户 / token / 任务元数据持久化数据库（相对路径按项目根目录解析）
+_db_path_raw: str = os.getenv("DB_PATH", str(PROJECT_ROOT / "data" / "api.db"))
+DB_PATH: Path = Path(_db_path_raw) if Path(_db_path_raw).is_absolute() else PROJECT_ROOT / _db_path_raw
+# 引导管理员 token（明文）；首次启动且库内无 admin 时写入其哈希。留空则不创建。
+ADMIN_BOOTSTRAP_TOKEN: str = os.getenv("ADMIN_BOOTSTRAP_TOKEN", "")
+
 # ============ 占位符前后缀 ============
 BLOCK_PLACEHOLDER_PREFIX: str = "{{BLOCK_MATH_"
 BLOCK_PLACEHOLDER_SUFFIX: str = "}}"

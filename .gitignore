@@ -31,6 +31,12 @@ TEST_LOG.md
 # Output
 output/
 
+# API database
+data/
+*.db
+*.db-wal
+*.db-shm
+
 # OS
 .DS_Store
 Thumbs.db
