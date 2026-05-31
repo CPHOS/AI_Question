@@ -93,6 +93,8 @@ SEED_LATEX_COMPILE_TIMEOUT: int = int(os.getenv("LATEX_COMPILE_TIMEOUT", "180"))
 SEED_LATEX_COMPILER_BACKEND: str = os.getenv("LATEX_COMPILER_BACKEND", "local")
 # 远程编译服务根 URL（backend=remote 时必填），如 http://latex-svc:8100
 SEED_LATEX_SERVICE_BASE_URL: str = os.getenv("LATEX_SERVICE_BASE_URL", "")
+# 远程编译服务的 API Key（经 Authorization: Bearer 发送；服务端 /healthz 外均需鉴权）。
+SEED_LATEX_SERVICE_API_KEY: str = os.getenv("LATEX_SERVICE_API_KEY", "")
 # 远程编译作业的轮询间隔（秒）与客户端等待终态的总截止（秒）。
 SEED_LATEX_SERVICE_POLL_INTERVAL: float = float(os.getenv("LATEX_SERVICE_POLL_INTERVAL", "2.0"))
 SEED_LATEX_SERVICE_MAX_WAIT: float = float(os.getenv("LATEX_SERVICE_MAX_WAIT", "1200.0"))
@@ -106,6 +108,20 @@ CPHOS_TEMPLATE_DIR: str = os.getenv(
     "CPHOS_TEMPLATE_DIR",
     str((PROJECT_ROOT.parent / "CPHOS-Latex" / "theory").resolve()),
 )
+
+# ============ FormatChecker 格式检查工具（宿主工具链，.env 部署项） ============
+# CPHOS LaTeX 格式检查器，以 git submodule 形式置于 external/FormatChecker。
+# 在模板修正（fix_template）节点对 final_latex 运行该工具，把检查报告并入
+# template_report 反馈给格式修整流程。工具缺失或异常时优雅降级，不阻断流水线。
+FORMAT_CHECK_ENABLED: bool = _env_bool("FORMAT_CHECK_ENABLED", True)
+# 子模块根目录（含 main.py）。默认指向仓库内 external/FormatChecker。
+FORMAT_CHECK_DIR: str = os.getenv(
+    "FORMAT_CHECK_DIR", str((PROJECT_ROOT / "external" / "FormatChecker").resolve()),
+)
+# 最低报告级别：info / warning / error。默认 warning，聚焦可执行问题、降低噪声。
+FORMAT_CHECK_MIN_SEVERITY: str = os.getenv("FORMAT_CHECK_MIN_SEVERITY", "warning")
+# 单次格式检查子进程的超时（秒）。
+FORMAT_CHECK_TIMEOUT: float = float(os.getenv("FORMAT_CHECK_TIMEOUT", "30"))
 
 # ============ API 后端服务 ============
 API_HOST: str = os.getenv("API_HOST", "0.0.0.0")

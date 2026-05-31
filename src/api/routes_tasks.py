@@ -195,6 +195,8 @@ def get_task_progress(task_id: str, identity: Identity = Depends(require_user)) 
                 seq=e["seq"],
                 phase=e["phase"],
                 phase_label=progress.phase_label(e["phase"]),
+                occurrence_id=e.get("occurrence_id", ""),
+                round=e.get("round", 1),
                 status=e["status"],
                 output=e["output"],
                 created_at=e["created_at"],
@@ -448,6 +450,8 @@ async def _sse_event_stream(task_id: str):
                 "seq": e["seq"],
                 "phase": e["phase"],
                 "phase_label": progress.phase_label(e["phase"]),
+                "occurrence_id": e.get("occurrence_id", ""),
+                "round": e.get("round", 1),
                 "status": e["status"],
                 "output": e["output"],
                 "created_at": e["created_at"],
@@ -476,7 +480,8 @@ async def _sse_event_stream(task_id: str):
                 "Server-Sent Events 流。帧格式：\n\n"
                 "- `: connected` —— 建立连接时的注释帧（心跳/就绪标记，无 event）。\n"
                 "- `event: phase` —— 阶段事件帧，`data` 为 JSON，结构同 `ProgressEvent` "
-                "（字段：seq / phase / phase_label / status / output / created_at）。\n"
+                "（字段：seq / phase / phase_label / occurrence_id / round / status / "
+                "output / created_at）。\n"
                 "- `event: status` —— 终止帧，`data` 为 `{\"status\": <终态>}`（任务进入 "
                 "done / error / aborted / interrupted，或被删除时 `deleted`），随后服务端关闭流。"
             ),

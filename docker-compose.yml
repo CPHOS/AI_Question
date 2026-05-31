@@ -1,0 +1,60 @@
+# ============================================================================
+# CPhOS AI 命题系统 —— 后端 + nginx 反向代理
+# ----------------------------------------------------------------------------
+# 用法：
+#   1) 准备 .env（参考 .env.example，至少配置 OPENROUTER_API_KEY /
+#      ADMIN_BOOTSTRAP_TOKEN；容器内推荐 LATEX_COMPILER_BACKEND=remote）。
+#   2) 拉取子模块：git submodule update --init
+#   3) docker compose up -d --build
+#   4) 反代后入口：http://<host>/   （/api/* -> 后端，/docs 为 OpenAPI 文档）
+#
+# 注意：api 服务为进程内有状态（任务执行器 + SSE），请勿设置 deploy.replicas>1。
+# ============================================================================
+services:
+  api:
+    build:
+      context: .
+      args:
+        # 设为 "true" 可在镜像内安装 TeX Live 以支持本机 LaTeX 编译（体积很大）。
+        INSTALL_TEXLIVE: "false"
+    image: cphos-ai-question:latest
+    container_name: cphos-api
+    env_file:
+      - .env
+    environment:
+      # 容器内监听固定 8000（与 Dockerfile EXPOSE / 健康检查一致）。
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      # 同源反代部署无需 CORS；如前端跨域直连后端再在 .env 配置 CORS_ALLOW_ORIGINS。
+    volumes:
+      # SQLite（用户/token/任务元数据 + LLM 设置）持久化。
+      - ./data:/app/data
+      # 生成产物（.tex/.pdf/报告）持久化。
+      - ./output:/app/output
+      # 本机 LaTeX 编译时挂载 CPHOS 模板（remote 后端无需，可保持注释）：
+      # 容器内 PROJECT_ROOT=/app，默认 CPHOS_TEMPLATE_DIR=../CPHOS-Latex/theory -> /CPHOS-Latex/theory
+      # - ../CPHOS-Latex:/CPHOS-Latex:ro
+    expose:
+      - "8000"
+    restart: unless-stopped
+    # 不对外发布端口，统一经 nginx 入口；如需直连调试可临时加 ports: ["8000:8000"]。
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: cphos-nginx
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      # 启用 TLS 时再开放并挂载证书：
+      # - "443:443"
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # 可选：把前端构建产物挂进来由 nginx 直接服务（见 default.conf 中 location /）。
+      # - ../AI_Question_Dashboard/dist:/usr/share/nginx/html:ro
+      # 启用 TLS 时挂载证书目录：
+      # - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
+# 默认 bridge 网络下，nginx 通过服务名 `api` 解析到后端容器。

@@ -279,7 +279,16 @@ class LocalCompiler:
 
 
 class RemoteCompiler:
-    """远程后端：把全部步骤打包成单个编译作业提交、轮询、回收产物。"""
+    """远程后端：把每个步骤作为一个独立编译作业提交、轮询、回收 PDF 产物。
+
+    远程编译服务（CPHOS LaTeX Compilation Service）以「一作业一文档」为模型：
+    每个作业编译单个入口 ``.tex`` 产出一份 PDF。故本后端把 ``steps`` 中的每一步
+    映射为一次 ``POST /v1/compile``：上传该步入口源 + 全部 ``assets``（如已编译
+    的图片 PDF），轮询至终态后把结果 PDF 下载回 ``workspace`` 对应相对路径。
+
+    服务镜像预装 CPHOS 模板与字体，故 ``template_dir`` 不上传；其是否非空仅用于
+    决定 ``use_cphos_templates``（最终文档需要、standalone 图片不需要）。
+    """
 
     def compile_many(
         self,
@@ -290,7 +299,10 @@ class RemoteCompiler:
         template_dir: str = "",
         timeout: int | None = None,
     ) -> dict[str, StepResult]:
-        from client.latex_service import LatexServiceClient, LatexServiceError
+        from client.latex_service import (
+            LatexServiceClient,
+            LatexServiceError,
+        )
 
         base_url = runtime.latex_service_base_url()
         if not base_url:
@@ -298,74 +310,75 @@ class RemoteCompiler:
                 s.id: StepResult(s.id, False, "LATEX_SERVICE_BASE_URL 未配置")
                 for s in steps
             }
-        if timeout is None:
-            timeout = runtime.latex_compile_timeout()
 
-        # 收集工作区文件：步骤 root（tex 源）+ 额外资产（如已编译的图片 PDF）。
-        files: dict[str, bytes] = {}
-        for rel in [s.root for s in steps] + list(assets):
-            fp = workspace / rel
-            if fp.exists():
-                files[rel] = fp.read_bytes()
-
-        manifest = {
-            "engine": LATEX_ENGINE,
-            "timeout_seconds": timeout,
-            "steps": [{"id": s.id, "root": s.root, "passes": s.passes} for s in steps],
-            "outputs": [_pdf_rel_of(s.root) for s in steps],
-        }
+        # 服务镜像预装 CPHOS 模板：template_dir 非空 → 最终文档，启用模板搜索路径。
+        use_cphos_templates = bool(template_dir)
 
         try:
-            with LatexServiceClient(base_url) as client:
-                job = client.submit(files, manifest)
-                job = client.wait(
-                    job.job_id,
-                    poll_interval=runtime.latex_service_poll_interval(),
-                    max_wait=runtime.latex_service_max_wait(),
-                )
-                if job.status == "failed":
-                    detail = (job.error or {}).get("message", "远程编译作业失败")
-                    results = {s.id: StepResult(s.id, False, str(detail)) for s in steps}
-                    client.delete(job.job_id)
-                    return results
-                if job.status == "expired":
-                    return {s.id: StepResult(s.id, False, "远程编译作业已过期") for s in steps}
-
-                results = self._collect(client, job, steps, workspace)
-                client.delete(job.job_id)
+            with LatexServiceClient(
+                base_url, api_key=runtime.latex_service_api_key()
+            ) as client:
+                results: dict[str, StepResult] = {}
+                for step in steps:
+                    results[step.id] = self._compile_one(
+                        client, workspace, step, assets, use_cphos_templates
+                    )
                 return results
         except LatexServiceError as exc:
             return {
                 s.id: StepResult(s.id, False, f"远程编译失败: {exc}") for s in steps
             }
 
-    def _collect(self, client, job, steps: list[BuildStep], workspace: Path) -> dict[str, StepResult]:
-        """把作业的步骤结果转为 StepResult，并把产物 PDF 下载回工作区。"""
-        from client.latex_service import LatexServiceError
+    def _compile_one(
+        self,
+        client,
+        workspace: Path,
+        step: BuildStep,
+        assets: tuple[str, ...],
+        use_cphos_templates: bool,
+    ) -> StepResult:
+        """提交并回收单个步骤；产出 PDF 写回 ``workspace / <root>.pdf``。"""
+        from client.latex_service import LatexServiceError, LatexServiceTimeout
 
-        step_by_id = {st.get("id"): st for st in job.steps}
-        results: dict[str, StepResult] = {}
-        for step in steps:
-            st = step_by_id.get(step.id)
-            if st is None:
-                results[step.id] = StepResult(step.id, False, "服务未返回该步骤结果")
-                continue
-            ok = bool(st.get("ok"))
-            log_tail = str(st.get("log_tail", ""))
-            produced = tuple(st.get("produced", []))
-            if ok:
-                for rel in produced:
-                    try:
-                        data = client.fetch_artifact(job.job_id, rel)
-                    except LatexServiceError as exc:
-                        ok = False
-                        log_tail += f"\n[产物下载失败] {rel}: {exc}"
-                        continue
-                    dest = workspace / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(data)
-            results[step.id] = StepResult(step.id, ok, log_tail, produced)
-        return results
+        # 收集上传文件：步骤入口源 + 额外资产（如已编译图片 PDF）。
+        files: dict[str, bytes] = {}
+        for rel in [step.root, *assets]:
+            fp = workspace / rel
+            if fp.exists():
+                files[rel] = fp.read_bytes()
+        if step.root not in files:
+            return StepResult(step.id, False, f"入口源不存在: {step.root}")
+
+        pdf_rel = _pdf_rel_of(step.root)
+        job_id: str | None = None
+        try:
+            job = client.submit(
+                files,
+                entrypoint=step.root,
+                use_cphos_templates=use_cphos_templates,
+            )
+            job_id = job.job_id
+            job = client.wait(
+                job_id,
+                poll_interval=runtime.latex_service_poll_interval(),
+                max_wait=runtime.latex_service_max_wait(),
+            )
+            if not job.succeeded:
+                log_tail = client.fetch_log(job_id) or (job.error or "远程编译失败")
+                return StepResult(step.id, False, log_tail)
+
+            data = client.fetch_result(job_id, fmt="pdf")
+            dest = workspace / pdf_rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            return StepResult(step.id, True, "", (pdf_rel,))
+        except LatexServiceTimeout as exc:
+            return StepResult(step.id, False, f"远程编译超时: {exc}")
+        except LatexServiceError as exc:
+            return StepResult(step.id, False, f"远程编译失败: {exc}")
+        finally:
+            if job_id:
+                client.delete(job_id)
 
 
 def _get_compiler():
@@ -379,27 +392,47 @@ def _rewrite_figure_asset_paths(
     latex: str,
     task_id: str,
     fig_desc: dict,
-    available_pdfs: set[str] | None = None,
 ) -> str:
-    """把 merge 阶段的 fig/figN.pdf 路径改为本任务资产目录；缺失 PDF 时改为可编译占位。"""
+    """把 merge 阶段的 ``fig/figN.pdf`` 引用改写为「自愈式」资产引用。
+
+    每个 ``\\includegraphics[opts]{fig/figN.pdf}`` 被改写为编译期条件：
+
+    .. code-block:: latex
+
+        \\IfFileExists{<task>_assets/figN.pdf}
+          {\\includegraphics[opts]{<task>_assets/figN.pdf}}
+          {\\fbox{...插图 PDF 未生成...}}
+
+    这样引用是否成图由 **LaTeX 编译时**按资产 PDF 是否存在决定，而非生成那一刻
+    一次性写死。好处：生成时绘图失败只会落入占位分支；事后用 ``recompile_outputs``
+    重编出 ``figN.pdf`` 后，同一份源即自动收进真图——无需重跑生成、也不会因首次
+    失败把 ``\\includegraphics`` 指令从源文件里抹掉而永久卡在占位框。
+
+    原 ``[opts]``（如 ``[width=...]``）被完整保留。
+    """
     result = latex
     for data in fig_desc.values():
         filename = data.get("filename", "")
-        if filename:
-            src = f"fig/{filename}"
-            if available_pdfs is None or filename in available_pdfs:
-                result = result.replace(f"{{{src}}}", f"{{{task_id}{ASSETS_DIR_SUFFIX}/{filename}}}")
-            else:
-                placeholder = (
-                    rf"\fbox{{\parbox{{{FIGURE_WIDTH}}}{{\centering "
-                    f"插图 PDF 未生成：{_tex_escape_text(filename)}"
-                    r"}}"
-                )
-                result = re.sub(
-                    rf'\\includegraphics(?:\[[^\]]*\])?\{{{re.escape(src)}\}}',
-                    lambda _m: placeholder,
-                    result,
-                )
+        if not filename:
+            continue
+        src = f"fig/{filename}"
+        asset = f"{task_id}{ASSETS_DIR_SUFFIX}/{filename}"
+        placeholder = (
+            rf"\fbox{{\parbox{{{FIGURE_WIDTH}}}{{\centering "
+            f"插图 PDF 未生成：{_tex_escape_text(filename)}"
+            r"}}"
+        )
+
+        def _repl(m: "re.Match[str]") -> str:
+            opts = m.group(1) or ""
+            include = rf"\includegraphics{opts}{{{asset}}}"
+            return rf"\IfFileExists{{{asset}}}{{{include}}}{{{placeholder}}}"
+
+        result = re.sub(
+            rf'\\includegraphics(\[[^\]]*\])?\{{{re.escape(src)}\}}',
+            _repl,
+            result,
+        )
     return result
 
 
@@ -496,8 +529,10 @@ def recompile_outputs(task_id: str, output_dir: Path) -> dict:
     2. 以可用图片 PDF 为资产重编最终文档（``passes=2``）；
     3. 把最新编译状态写回 ``_log.json``。
 
-    注意：最终 LaTeX 中的图片引用 / 占位在生成时已根据当时可用的图片确定，本函数
-    不重写引用路径；若需要据新编译出的图片刷新引用，应重跑生成任务。
+    注意：最终 LaTeX 中的图片引用经 :func:`_rewrite_figure_asset_paths` 改写为
+    ``\\IfFileExists`` 自愈式条件，故本函数无需重写源：只要本次把 ``figN.pdf``
+    成功编译出来（并作为资产提供给编译器），最终文档即在本次编译中自动收进真图，
+    替换掉首次失败时显示的占位框。
 
     Returns:
         ``{"latex_compile_status": {...}, "figure_compile_status": {...}}``。
@@ -610,7 +645,6 @@ def write_outputs(task_id: str, final_state: WorkflowData, output_dir: Path) -> 
             final_state["final_latex"],
             task_id,
             fig_desc,
-            available_figure_pdfs,
         )
         p.write_text(final_latex, encoding="utf-8")
         paths["final_latex"] = p

@@ -57,13 +57,15 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks (user_id);
 
 CREATE TABLE IF NOT EXISTS task_events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id     TEXT NOT NULL,
-    seq         INTEGER NOT NULL,
-    phase       TEXT NOT NULL,
-    status      TEXT NOT NULL,
-    output_json TEXT,
-    created_at  TEXT NOT NULL,
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id       TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    phase         TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    occurrence_id TEXT NOT NULL DEFAULT '',
+    round         INTEGER NOT NULL DEFAULT 1,
+    output_json   TEXT,
+    created_at    TEXT NOT NULL,
     FOREIGN KEY (task_id) REFERENCES tasks (task_id)
 );
 CREATE INDEX IF NOT EXISTS idx_events_task ON task_events (task_id, seq);
@@ -125,6 +127,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN difficulty TEXT NOT NULL DEFAULT ''")
     if "source_material" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN source_material TEXT NOT NULL DEFAULT ''")
+
+    event_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)").fetchall()}
+    if "occurrence_id" not in event_cols:
+        conn.execute("ALTER TABLE task_events ADD COLUMN occurrence_id TEXT NOT NULL DEFAULT ''")
+    if "round" not in event_cols:
+        conn.execute("ALTER TABLE task_events ADD COLUMN round INTEGER NOT NULL DEFAULT 1")
 
 
 def configure(db_path: Path) -> None:

@@ -88,8 +88,13 @@ def test_write_outputs_rewrites_figure_asset_path(tmp_path, monkeypatch):
     paths = write_outputs("taskabc", state, tmp_path)
     final_tex = paths["final_latex"].read_text(encoding="utf-8")
 
+    # 自愈式改写：源始终保留对资产 PDF 的引用（\IfFileExists + \includegraphics），
+    # 同时带占位分支。生成时图未编译 → 编译期落入占位；事后重编出 PDF 即自动收图。
+    assert r"\IfFileExists{taskabc_assets/fig1.pdf}" in final_tex
+    assert r"\includegraphics" in final_tex and "{taskabc_assets/fig1.pdf}" in final_tex
     assert "插图 PDF 未生成：fig1.pdf" in final_tex
-    assert "{taskabc_assets/fig1.pdf}" not in final_tex
+    # 旧的 merge 期 fig/ 路径已被改写殆尽。
+    assert "{fig/fig1.pdf}" not in final_tex
 
 
 def test_write_outputs_rewrites_figure_asset_path_when_pdf_exists(tmp_path, monkeypatch):
@@ -124,10 +129,38 @@ def test_write_outputs_rewrites_figure_asset_path_when_pdf_exists(tmp_path, monk
         state["final_latex"],
         "taskabc",
         state["figure_descriptions"],
-        {"fig1.pdf"},
     )
 
     assert "{taskabc_assets/fig1.pdf}" in final_tex
+    assert r"\IfFileExists{taskabc_assets/fig1.pdf}" in final_tex
+
+
+def test_rewrite_figure_preserves_includegraphics_options():
+    """改写须完整保留 \\includegraphics 的 [opts]（如 width），并放进真图分支。"""
+    fig_desc = {"fig_1": {"filename": "fig1.pdf"}}
+    latex = r"\includegraphics[width=0.55\textwidth]{fig/fig1.pdf}"
+
+    out = _rewrite_figure_asset_paths(latex, "taskabc", fig_desc)
+
+    assert (
+        r"\IfFileExists{taskabc_assets/fig1.pdf}"
+        r"{\includegraphics[width=0.55\textwidth]{taskabc_assets/fig1.pdf}}"
+    ) in out
+    # 占位分支不带图形指令，仅文本框。
+    assert "插图 PDF 未生成：fig1.pdf" in out
+    assert "{fig/fig1.pdf}" not in out
+
+
+def test_rewrite_figure_is_idempotent_and_self_healing():
+    """同一份源被改写一次后即稳定：是否成图交由编译期 \\IfFileExists 判定，
+    因此重编出 PDF 后无需再次改写源即可收图（自愈）。"""
+    fig_desc = {"fig_1": {"filename": "fig1.pdf"}}
+    latex = r"\includegraphics{fig/fig1.pdf}"
+
+    once = _rewrite_figure_asset_paths(latex, "taskabc", fig_desc)
+    # 改写产物里不再有 merge 期 fig/ 路径，故二次改写不再变化。
+    twice = _rewrite_figure_asset_paths(once, "taskabc", fig_desc)
+    assert once == twice
 
 
 def test_resolve_template_dir_relative_to_project_root(tmp_path, monkeypatch):
@@ -307,3 +340,121 @@ def test_recompile_outputs_compiles_figures_and_final(tmp_path, monkeypatch):
     log = json.loads((tmp_path / "task_log.json").read_text(encoding="utf-8"))
     assert log["latex_compile_status"]["ok"] is True
     assert log["figure_compile_status"]["fig1"]["ok"] is True
+
+
+class _FakeJob:
+    def __init__(self, status="succeeded"):
+        self.job_id = "job-1"
+        self.status = status
+        self.error = None
+
+    @property
+    def succeeded(self):
+        return self.status == "succeeded"
+
+
+def test_remote_compiler_one_job_per_step(tmp_path, monkeypatch):
+    """RemoteCompiler 为每个步骤提交一个独立作业，并把产出 PDF 写回工作区。"""
+    monkeypatch.setattr("config.runtime.latex_service_base_url", lambda: "http://svc")
+    monkeypatch.setattr("config.runtime.latex_service_api_key", lambda: "k")
+    monkeypatch.setattr("config.runtime.latex_service_poll_interval", lambda: 0.0)
+    monkeypatch.setattr("config.runtime.latex_service_max_wait", lambda: 10.0)
+
+    (tmp_path / "doc.tex").write_text("\\documentclass{article}", encoding="utf-8")
+    (tmp_path / "fig1.pdf").write_bytes(b"%PDF-asset")
+
+    submitted = []
+
+    class _FakeClient:
+        def __init__(self, base_url, *, api_key=""):
+            assert base_url == "http://svc"
+            assert api_key == "k"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def submit(self, files, *, entrypoint=None, use_cphos_templates=True, **kw):
+            submitted.append({
+                "entrypoint": entrypoint,
+                "use_cphos": use_cphos_templates,
+                "files": sorted(files),
+            })
+            return _FakeJob()
+
+        def wait(self, job_id, *, poll_interval, max_wait):
+            return _FakeJob()
+
+        def fetch_result(self, job_id, *, fmt="pdf"):
+            return b"%PDF-result"
+
+        def fetch_log(self, job_id):
+            return ""
+
+        def delete(self, job_id):
+            pass
+
+    monkeypatch.setattr("client.latex_service.LatexServiceClient", _FakeClient)
+
+    results = RemoteCompiler().compile_many(
+        tmp_path,
+        [BuildStep("final", "doc.tex", 2)],
+        assets=("fig1.pdf",),
+        template_dir="/opt/cphos",
+    )
+
+    assert results["final"].ok is True
+    assert results["final"].produced == ("doc.pdf",)
+    assert (tmp_path / "doc.pdf").read_bytes() == b"%PDF-result"
+    # 入口随附属资产一并上传，且最终文档启用 CPHOS 模板
+    assert submitted[0]["entrypoint"] == "doc.tex"
+    assert submitted[0]["use_cphos"] is True
+    assert submitted[0]["files"] == ["doc.tex", "fig1.pdf"]
+
+
+def test_remote_compiler_failure_uses_log(tmp_path, monkeypatch):
+    """步骤失败时，log_tail 取服务端编译日志。"""
+    monkeypatch.setattr("config.runtime.latex_service_base_url", lambda: "http://svc")
+    monkeypatch.setattr("config.runtime.latex_service_api_key", lambda: "")
+    monkeypatch.setattr("config.runtime.latex_service_poll_interval", lambda: 0.0)
+    monkeypatch.setattr("config.runtime.latex_service_max_wait", lambda: 10.0)
+
+    (tmp_path / "fig1.tex").write_text("\\documentclass{standalone}", encoding="utf-8")
+
+    class _FakeClient:
+        def __init__(self, base_url, *, api_key=""):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def submit(self, files, **kw):
+            return _FakeJob("failed")
+
+        def wait(self, job_id, *, poll_interval, max_wait):
+            return _FakeJob("failed")
+
+        def fetch_log(self, job_id):
+            return "! Undefined control sequence."
+
+        def delete(self, job_id):
+            pass
+
+    monkeypatch.setattr("client.latex_service.LatexServiceClient", _FakeClient)
+
+    results = RemoteCompiler().compile_many(tmp_path, [BuildStep("fig1", "fig1.tex", 1)])
+
+    assert results["fig1"].ok is False
+    assert "Undefined control sequence" in results["fig1"].log_tail
+
+
+def test_remote_compiler_missing_base_url(monkeypatch, tmp_path):
+    monkeypatch.setattr("config.runtime.latex_service_base_url", lambda: "")
+    results = RemoteCompiler().compile_many(tmp_path, [BuildStep("final", "doc.tex", 1)])
+    assert results["final"].ok is False
+    assert "LATEX_SERVICE_BASE_URL" in results["final"].log_tail

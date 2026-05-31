@@ -1,0 +1,42 @@
+# 版本控制 / IDE
+.git
+.gitignore
+.idea
+.vscode
+
+# Python 缓存与虚拟环境（镜像内重新创建）
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+.pytest_cache
+*.egg-info
+dist
+build
+
+# 运行期数据与产物（通过卷挂载提供，勿打进镜像）
+data/
+output/
+*.db
+*.db-wal
+*.db-shm
+
+# 机密：勿把本地 .env 烤进镜像（用 docker compose env_file / -e 注入）
+.env
+.env.local
+
+# 日志
+*.log
+run_log.txt
+TEST_LOG.md
+
+# 部署产物自身
+docker-compose.yml
+deploy/
+
+# 测试（运行镜像不需要）
+tests/
+
+# 文档（可选保留；此处排除以减小上下文）
+docs/

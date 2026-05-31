@@ -1386,7 +1386,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Server-Sent Events 流。帧格式：\n\n- `: connected` —— 建立连接时的注释帧（心跳/就绪标记，无 event）。\n- `event: phase` —— 阶段事件帧，`data` 为 JSON，结构同 `ProgressEvent` （字段：seq / phase / phase_label / status / output / created_at）。\n- `event: status` —— 终止帧，`data` 为 `{\"status\": <终态>}`（任务进入 done / error / aborted / interrupted，或被删除时 `deleted`），随后服务端关闭流。",
+            "description": "Server-Sent Events 流。帧格式：\n\n- `: connected` —— 建立连接时的注释帧（心跳/就绪标记，无 event）。\n- `event: phase` —— 阶段事件帧，`data` 为 JSON，结构同 `ProgressEvent` （字段：seq / phase / phase_label / occurrence_id / round / status / output / created_at）。\n- `event: status` —— 终止帧，`data` 为 `{\"status\": <终态>}`（任务进入 done / error / aborted / interrupted，或被删除时 `deleted`），随后服务端关闭流。",
             "content": {
               "text/event-stream": {}
             }
@@ -4148,6 +4148,16 @@
             "title": "Latex Service Base Url",
             "default": ""
           },
+          "latex_service_api_key_set": {
+            "type": "boolean",
+            "title": "Latex Service Api Key Set",
+            "default": false
+          },
+          "latex_service_api_key_masked": {
+            "type": "string",
+            "title": "Latex Service Api Key Masked",
+            "default": ""
+          },
           "latex_service_poll_interval": {
             "type": "number",
             "title": "Latex Service Poll Interval",
@@ -4265,6 +4275,18 @@
             ],
             "title": "Latex Service Base Url",
             "description": "远程编译服务根 URL（backend=remote 时必填）。"
+          },
+          "latex_service_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latex Service Api Key",
+            "description": "远程编译服务 API Key（经 Authorization: Bearer 发送）。"
           },
           "latex_service_poll_interval": {
             "anyOf": [
@@ -5039,6 +5061,18 @@
             "title": "Phase Label",
             "description": "阶段的中文显示标签。",
             "default": ""
+          },
+          "occurrence_id": {
+            "type": "string",
+            "title": "Occurrence Id",
+            "description": "同一阶段同一次执行的稳定标识（running/completed 共享），形如 'REVIEWING#2'，供前端无序配对，无需依赖事件顺序。",
+            "default": ""
+          },
+          "round": {
+            "type": "integer",
+            "title": "Round",
+            "description": "重试轮次（从 1 起），由状态机总重试计数推导，便于前端按轮分组。",
+            "default": 1
           },
           "status": {
             "type": "string",

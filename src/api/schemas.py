@@ -164,6 +164,15 @@ class ProgressEvent(BaseModel):
     seq: int = Field(description="任务内单调递增的事件序号。")
     phase: str = Field(description="阶段名（Phase.name，如 REVIEWING）。")
     phase_label: str = Field(default="", description="阶段的中文显示标签。")
+    occurrence_id: str = Field(
+        default="",
+        description="同一阶段同一次执行的稳定标识（running/completed 共享），形如 "
+                    "'REVIEWING#2'，供前端无序配对，无需依赖事件顺序。",
+    )
+    round: int = Field(
+        default=1,
+        description="重试轮次（从 1 起），由状态机总重试计数推导，便于前端按轮分组。",
+    )
     status: Literal["running", "completed"] = Field(
         description="running=进入该阶段；completed=该阶段产出就绪。"
     )
@@ -435,6 +444,9 @@ class AppSettingsUpdate(BaseModel):
     latex_service_base_url: Optional[str] = Field(
         default=None, description="远程编译服务根 URL（backend=remote 时必填）。"
     )
+    latex_service_api_key: Optional[str] = Field(
+        default=None, description="远程编译服务 API Key（经 Authorization: Bearer 发送）。"
+    )
     latex_service_poll_interval: Optional[float] = Field(
         default=None, gt=0, description="远程编译作业状态轮询间隔（秒）。"
     )
@@ -459,6 +471,8 @@ class AppSettingsInfo(BaseModel):
     latex_compile_timeout: int = 180
     latex_compiler_backend: str = "local"
     latex_service_base_url: str = ""
+    latex_service_api_key_set: bool = False
+    latex_service_api_key_masked: str = ""
     latex_service_poll_interval: float = 2.0
     latex_service_max_wait: float = 1200.0
     sse_poll_interval: float = 1.0

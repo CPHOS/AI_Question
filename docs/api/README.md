@@ -73,7 +73,9 @@ GET  /api/tasks/{task_id}/result             ──► 内联返回 final_latex 
 - `completed` 事件的 `output` 字段是按**阶段类型**格式化的结构化快照（如审核阶段
   给出四路审核意见、仲裁阶段给出裁决与重试计数、排版阶段给出公式/插图计数），
   **不是模型原始输出**；长文本会截断并以 `truncated` / `length` 标注；
-- 重试会使同名阶段多次出现，按单调递增的 `seq` 区分；
+- 重试会使同名阶段多次出现，按单调递增的 `seq` 区分；同一阶段一次执行的
+  `running` / `completed` 共享 `occurrence_id`（如 `REVIEWING#2`）以便无序配对，
+  并带 `round`（重试轮次，从 1 起）便于按轮分组；
 - 完整成品（如 LaTeX）请通过产物下载端点获取，进度仅给规模统计。
 
 ## 端点速览
@@ -184,7 +186,7 @@ GET  /api/tasks/{task_id}/result             ──► 内联返回 final_latex 
 替代（客户端不支持时回退轮询）。帧类型：
 
 - `: connected` —— 建立连接时下发的注释帧（就绪/心跳标记，无 `event` 字段）；
-- `event: phase` —— 阶段事件，`data` 为 `{seq, phase, phase_label, status, output, created_at}`；
+- `event: phase` —— 阶段事件，`data` 为 `{seq, phase, phase_label, occurrence_id, round, status, output, created_at}`；
 - `event: status` —— 任务进入终态时推送 `{status}` 并关闭连接（任务被删除时为 `{"status": "deleted"}`）。
 
 ### 跨域（CORS）

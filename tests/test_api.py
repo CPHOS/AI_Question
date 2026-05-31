@@ -387,6 +387,18 @@ def test_progress_timeline_after_completion(client):
     # seq 单调递增
     seqs = [e["seq"] for e in events]
     assert seqs == sorted(seqs)
+    # 每个事件都带 occurrence_id 与 round（>=1）
+    for e in events:
+        assert e["occurrence_id"].startswith(e["phase"] + "#")
+        assert e["round"] >= 1
+    # 同一阶段一次执行的 running / completed 共享 occurrence_id
+    by_phase: dict[str, dict[str, str]] = {}
+    for e in events:
+        by_phase.setdefault(e["phase"], {})[e["status"]] = e["occurrence_id"]
+    paired = [v for v in by_phase.values() if "running" in v and "completed" in v]
+    assert paired, "应至少有一个阶段同时含 running 与 completed 事件"
+    for v in paired:
+        assert v["running"] == v["completed"]
     # 含格式化产出与中文标签
     completed = [e for e in events if e["status"] == "completed"]
     assert completed
@@ -419,6 +431,42 @@ def test_delete_removes_progress_events(client):
     assert client.delete(f"/api/tasks/{task_id}", headers=_auth(token)).status_code == 200
     # 任务已不存在 → 进度查询 404
     assert client.get(f"/api/tasks/{task_id}/progress", headers=_auth(token)).status_code == 404
+
+
+def test_progress_sink_occurrence_and_round(api_db):
+    """单测进度回调：occurrence_id 在同阶段一次执行内 running/completed 共享，
+    再次进入同阶段自增；round 由总重试计数（retry_count）推导，从 1 起。"""
+    from api import jobs, store
+
+    user = store.create_user("sink")
+    store.create_task("t-sink", user["user_id"], mode="topic", topic="x", total_score=40)
+    sink = jobs._make_progress_sink("t-sink")
+
+    # 第 1 轮 PLANNING（retry_count=0 → round 1）
+    sink("PLANNING", "running", {"retry_count": 0})
+    sink("PLANNING", "completed", {"retry_count": 0})
+    # 第 1 次 PROBLEM_GENERATING
+    sink("PROBLEM_GENERATING", "running", {"retry_count": 0})
+    sink("PROBLEM_GENERATING", "completed", {"retry_count": 0})
+    # 仲裁判定重试 → 第 2 次 PROBLEM_GENERATING（retry_count=1 → round 2）
+    sink("PROBLEM_GENERATING", "running", {"retry_count": 1})
+    sink("PROBLEM_GENERATING", "completed", {"retry_count": 1})
+
+    events = store.list_events("t-sink")
+    # seq 单调递增且唯一
+    seqs = [e["seq"] for e in events]
+    assert seqs == [1, 2, 3, 4, 5, 6]
+
+    plan = [e for e in events if e["phase"] == "PLANNING"]
+    assert {e["occurrence_id"] for e in plan} == {"PLANNING#1"}
+    assert all(e["round"] == 1 for e in plan)
+
+    pg = [e for e in events if e["phase"] == "PROBLEM_GENERATING"]
+    # 前两条为 #1 round1，后两条为 #2 round2
+    assert pg[0]["occurrence_id"] == pg[1]["occurrence_id"] == "PROBLEM_GENERATING#1"
+    assert pg[0]["round"] == pg[1]["round"] == 1
+    assert pg[2]["occurrence_id"] == pg[3]["occurrence_id"] == "PROBLEM_GENERATING#2"
+    assert pg[2]["round"] == pg[3]["round"] == 2
 
 
 # ============ #1 GET /api/me ============

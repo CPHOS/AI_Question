@@ -6,6 +6,17 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _disable_format_check(monkeypatch):
+    """默认关闭外部 FormatChecker，避免单测触发子进程与外部 submodule 依赖。
+
+    需要验证集成的用例可显式 ``monkeypatch.setattr(cfg, "FORMAT_CHECK_ENABLED", True)``。
+    """
+    from config import config as cfg
+
+    monkeypatch.setattr(cfg, "FORMAT_CHECK_ENABLED", False)
+
+
 @pytest.fixture
 def api_db(tmp_path, monkeypatch):
     """把数据库切到临时文件并初始化，用例结束后复位。"""

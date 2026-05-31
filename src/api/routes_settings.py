@@ -207,10 +207,21 @@ def set_binding(
 
 # ============ 运行期应用设置 ============
 
+def _public_app_settings() -> AppSettingsInfo:
+    """读取应用设置并对密钥脱敏后构造响应模型。"""
+    data = dict(settings_store.get_app_settings())
+    key = str(data.pop("latex_service_api_key", "") or "")
+    data["latex_service_api_key_set"] = bool(key)
+    data["latex_service_api_key_masked"] = (
+        f"****{key[-4:]}" if len(key) >= 4 else ("****" if key else "")
+    )
+    return AppSettingsInfo(**data)
+
+
 @router.get("/settings", response_model=AppSettingsInfo, summary="查看运行期应用设置")
 def get_app_settings(_: Identity = Depends(require_admin)) -> AppSettingsInfo:
     """返回当前运行期应用设置（重试次数、自动编译开关、SSE 参数等）。"""
-    return AppSettingsInfo(**settings_store.get_app_settings())
+    return _public_app_settings()
 
 
 @router.patch("/settings", response_model=AppSettingsInfo, summary="更新运行期应用设置")
@@ -225,4 +236,4 @@ def update_app_settings(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         _invalidate()
-    return AppSettingsInfo(**settings_store.get_app_settings())
+    return _public_app_settings()

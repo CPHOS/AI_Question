@@ -291,7 +291,9 @@ def set_task_phase(task_id: str, phase: str) -> None:
 
 
 def append_event(
-    task_id: str, seq: int, phase: str, status: str, output: dict[str, Any] | None = None
+    task_id: str, seq: int, phase: str, status: str,
+    output: dict[str, Any] | None = None,
+    *, occurrence_id: str = "", round_: int = 1,
 ) -> None:
     """追加一条阶段进度事件。
 
@@ -301,12 +303,16 @@ def append_event(
         phase: 阶段名（:class:`engine.state_machine.Phase` 的 ``name``）。
         status: ``running`` / ``completed``。
         output: 已格式化的阶段产出快照（``completed`` 时提供）。
+        occurrence_id: 同一阶段同一次执行的稳定标识（``running``/``completed`` 共享），
+            供前端无序配对，形如 ``"REVIEWING#2"``。
+        round_: 重试轮次（从 1 起），便于前端按轮分组。
     """
     db.execute(
-        "INSERT INTO task_events (task_id, seq, phase, status, output_json, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO task_events "
+        "(task_id, seq, phase, status, occurrence_id, round, output_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            task_id, seq, phase, status,
+            task_id, seq, phase, status, occurrence_id, round_,
             json.dumps(output, ensure_ascii=False) if output is not None else None,
             _now(),
         ),
@@ -316,7 +322,7 @@ def append_event(
 def list_events(task_id: str) -> list[dict[str, Any]]:
     """按序返回某任务的全部进度事件（自动解析 ``output_json``）。"""
     rows = db.query_all(
-        "SELECT seq, phase, status, output_json, created_at "
+        "SELECT seq, phase, status, occurrence_id, round, output_json, created_at "
         "FROM task_events WHERE task_id = ? ORDER BY seq ASC",
         (task_id,),
     )

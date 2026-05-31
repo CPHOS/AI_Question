@@ -146,15 +146,34 @@ def _make_progress_sink(task_id: str):
 
     回调内部完全容错：任何持久化异常都被吞掉并记日志，绝不冒泡到状态机
     （状态机侧也有一层兜底），保证进度上报失败不影响生成主流程。
+
+    为前端时间线提供两个稳定标识：
+      - ``occurrence_id``：同一阶段同一次执行的标识（``running`` 进入时自增该阶段
+        计数，随后的 ``completed`` 复用同一值），形如 ``"REVIEWING#2"``，使前端无需
+        依赖「running 后紧跟同 phase completed」的顺序假设即可配对。
+      - ``round``：重试轮次（从 1 起），由状态机的总重试计数 ``retry_count`` 推导。
     """
     counter = {"seq": 0}
+    occurrences: dict[str, int] = {}
 
     def sink(phase: str, status: str, data: dict[str, Any]) -> None:
         counter["seq"] += 1
         seq = counter["seq"]
+        # running 进入阶段时开启新一次 occurrence；completed 复用当前计数。
+        if status == "running":
+            occurrences[phase] = occurrences.get(phase, 0) + 1
+        occurrence_id = f"{phase}#{occurrences.get(phase, 1)}"
+        total_retry = data.get(
+            "retry_count",
+            data.get("problem_retry_count", 0) + data.get("solution_retry_count", 0),
+        )
+        round_ = int(total_retry) + 1
         try:
             output = progress.format_phase_output(phase, data) if status == "completed" else None
-            store.append_event(task_id, seq, phase, status, output)
+            store.append_event(
+                task_id, seq, phase, status, output,
+                occurrence_id=occurrence_id, round_=round_,
+            )
             store.set_task_phase(task_id, phase)
         except Exception:  # noqa: BLE001 - 进度落库失败不影响任务
             logger.warning("[jobs] 进度落库失败 task_id=%s phase=%s", task_id, phase, exc_info=True)

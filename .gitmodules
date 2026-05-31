@@ -1,0 +1,3 @@
+[submodule "external/FormatChecker"]
+	path = external/FormatChecker
+	url = https://github.com/CPHOS/FormatChecker

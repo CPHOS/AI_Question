@@ -150,6 +150,12 @@ def latex_service_base_url() -> str:
     return str(_app_settings().get("latex_service_base_url", cfg.SEED_LATEX_SERVICE_BASE_URL))
 
 
+def latex_service_api_key() -> str:
+    from config import config as cfg
+
+    return str(_app_settings().get("latex_service_api_key", cfg.SEED_LATEX_SERVICE_API_KEY))
+
+
 def latex_service_poll_interval() -> float:
     from config import config as cfg
 

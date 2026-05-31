@@ -189,6 +189,12 @@ INIT -> PLANNING -> PROBLEM_GENERATING -> SOLUTION_GENERATING
 
 占位符完整性由 `latex.format` 和 `latex.merge` 检查。格式化 Agent 不应看到原始公式内容。
 
+第 4 步还会调用外部 **FormatChecker**（git submodule，位于 `external/FormatChecker`）：
+对修正后的 `final_latex` 运行 `latex.format_checker.run_format_check`（子进程调用其 CLI，
+`--no-cache` 无副作用），把人类可读的检查报告并入 `template_report` 反馈给格式修整流程。
+工具未启用 / 子模块缺失 / 运行异常时优雅降级，不阻断流水线。开关与参数见 `FORMAT_CHECK_*`
+部署项。**克隆仓库后需执行 `git submodule update --init` 初始化该子模块**，否则格式检查将降级跳过。
+
 ## CPHOS 模板约定
 
 | 内容 | 约定 |
@@ -269,6 +275,10 @@ INIT -> PLANNING -> PROBLEM_GENERATING -> SOLUTION_GENERATING
 | --- | --- | --- |
 | `LATEX_ENGINE` | 本地 LaTeX 编译命令 | `xelatex` |
 | `CPHOS_TEMPLATE_DIR` | `cphos.cls` 与配套样式所在目录；相对路径按项目根目录解析 | `../CPHOS-Latex/theory` |
+| `FORMAT_CHECK_ENABLED` | 是否在模板修正节点调用 FormatChecker | `1` |
+| `FORMAT_CHECK_DIR` | FormatChecker 子模块根目录（含 `main.py`） | `external/FormatChecker` |
+| `FORMAT_CHECK_MIN_SEVERITY` | 最低报告级别（`info`/`warning`/`error`） | `warning` |
+| `FORMAT_CHECK_TIMEOUT` | 单次检查子进程超时（秒） | `30` |
 | `OUTPUT_DIR` | 输出目录 | `output` |
 | `API_HOST` | API 服务监听地址 | `0.0.0.0` |
 | `API_PORT` | API 服务端口 | `8000` |

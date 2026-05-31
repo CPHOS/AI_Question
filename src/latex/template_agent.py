@@ -1,7 +1,7 @@
 """
 LaTeX 模板检查与调整。
 先用规则检查缺失环境、分值不一致、残留占位符等问题，
-再用 Agent 修复结构性排版问题。
+再调用外部 FormatChecker（git submodule）做格式检查，把反馈并入修正报告。
 输出 CPHOS 模板兼容的 .tex 文件。
 
 数据归属（参见 model/state.py）：
@@ -13,6 +13,7 @@ import re
 from model.state import WorkflowData, LaTeXPatch
 from config.config import logger
 from latex.template_spec import DOCUMENTCLASS
+from latex.format_checker import run_format_check, format_check_section
 
 
 _EQTAG_SCORE_RE = re.compile(r'\\eqtagscore\{[^}]+\}\{\d+\}')
@@ -181,40 +182,50 @@ def fix_template(data: WorkflowData) -> LaTeXPatch:
     模板修正节点：
     1. 规则检查
     2. 自动修复可修复问题
-    3. 输出修正报告
+    3. 调用外部 FormatChecker 对修正后文本做格式检查，把反馈并入报告
+    4. 输出修正报告
     """
     logger.info("[template] 进入模板修正节点")
-    latex = data.get("final_latex", "")
-    latex, pre_fixes = _normalize_latex_control_words(latex)
+    original = data.get("final_latex", "")
+    latex, pre_fixes = _normalize_latex_control_words(original)
 
     issues = _rule_check(latex)
 
     if not issues:
         logger.info("[template] 模板检查通过，无需修正")
-        result = {"template_report": "模板检查通过，无需修正。"}
+        report = "模板检查通过，无需修正。"
         if pre_fixes:
-            result["final_latex"] = latex
-            result["template_report"] += "\n  修复项: " + "; ".join(pre_fixes)
-        return result
+            report += "\n  修复项: " + "; ".join(pre_fixes)
+        changed = bool(pre_fixes)
+    else:
+        logger.info("[template] 发现 %d 个问题，尝试自动修复", len(issues))
+        latex, fixes = _auto_fix(latex, issues)
+        fixes = pre_fixes + fixes
 
-    logger.info("[template] 发现 %d 个问题，尝试自动修复", len(issues))
-    latex, fixes = _auto_fix(latex, issues)
-    fixes = pre_fixes + fixes
+        # 再次检查
+        remaining = _rule_check(latex)
+        warnings = [i for i in remaining if i not in fixes]
 
-    # 再次检查
-    remaining = _rule_check(latex)
-    warnings = [i for i in remaining if i not in fixes]
+        report_lines = ["模板修正报告："]
+        if fixes:
+            report_lines.append(f"  修复项: {'; '.join(fixes)}")
+        if warnings:
+            report_lines.append(f"  警告项: {'; '.join(warnings)}")
+        report = "\n".join(report_lines)
+        changed = bool(fixes)
 
-    report_lines = ["模板修正报告："]
-    if fixes:
-        report_lines.append(f"  修复项: {'; '.join(fixes)}")
-    if warnings:
-        report_lines.append(f"  警告项: {'; '.join(warnings)}")
-    report = "\n".join(report_lines)
+        logger.info("[template] 修正完成 | 修复 %d 项 | 警告 %d 项", len(fixes), len(warnings))
 
-    logger.info("[template] 修正完成 | 修复 %d 项 | 警告 %d 项", len(fixes), len(warnings))
+    # 外部格式检查器反馈（优雅降级，不阻断流水线）。
+    check = run_format_check(latex)
+    if check.available:
+        report += "\n" + format_check_section(check)
+        logger.info(
+            "[template] FormatChecker | 错误 %d | 警告 %d | 信息 %d",
+            check.error_count, check.warning_count, check.info_count,
+        )
 
-    result = {"template_report": report}
-    if fixes:
+    result: LaTeXPatch = {"template_report": report}
+    if changed:
         result["final_latex"] = latex
     return result
