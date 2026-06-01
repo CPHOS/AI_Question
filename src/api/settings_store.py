@@ -98,15 +98,15 @@ def _coerce(key: str, raw: str) -> Any:
 
 def create_provider(
     *, name: str, kind: str, api_key: str = "", base_url: str = "",
-    timeout: int = 600, max_retries: int = 3,
+    proxy: str = "", timeout: int = 600, max_retries: int = 3,
 ) -> dict[str, Any]:
     pid = f"prov_{uuid.uuid4().hex[:12]}"
     ts = _now()
     db.execute(
         "INSERT INTO llm_providers "
-        "(id, name, kind, api_key, base_url, timeout, max_retries, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (pid, name, kind, api_key, base_url, timeout, max_retries, ts, ts),
+        "(id, name, kind, api_key, base_url, proxy, timeout, max_retries, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (pid, name, kind, api_key, base_url, proxy, timeout, max_retries, ts, ts),
     )
     return get_provider(pid)  # type: ignore[return-value]
 
@@ -135,7 +135,7 @@ def count_providers() -> int:
 
 
 def update_provider(provider_id: str, **fields: Any) -> bool:
-    allowed = {"name", "kind", "api_key", "base_url", "timeout", "max_retries"}
+    allowed = {"name", "kind", "api_key", "base_url", "proxy", "timeout", "max_retries"}
     sets = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not sets:
         return get_provider(provider_id) is not None
@@ -340,6 +340,7 @@ def resolve(role: str) -> dict[str, Any]:
         "provider_kind": prov["kind"],
         "api_key": prov["api_key"],
         "base_url": prov["base_url"],
+        "proxy": prov.get("proxy", ""),
         "timeout": int(prov["timeout"]),
         "max_retries": int(prov["max_retries"]),
         "model": mc["model"],

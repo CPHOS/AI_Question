@@ -57,12 +57,13 @@ def get_client() -> BaseLLMClient:
 
 def build_client_from_settings(
     *, provider_kind: str, api_key: str, base_url: str = "",
-    timeout: int = 600, max_retries: int = 3,
+    proxy: str = "", timeout: int = 600, max_retries: int = 3,
 ) -> BaseLLMClient:
     """依据已解析的服务商设置构造客户端（供 :mod:`config.runtime` 使用）。"""
     cls = get_provider_class(provider_kind)
     return cls.from_settings(
-        api_key=api_key, base_url=base_url, timeout=timeout, max_retries=max_retries,
+        api_key=api_key, base_url=base_url, proxy=proxy,
+        timeout=timeout, max_retries=max_retries,
     )
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from typing import Optional
 
 from client.base import register_provider
 from client.openai_compat import OpenAICompatibleClient
@@ -20,12 +21,14 @@ class OpenRouterClient(OpenAICompatibleClient):
 
     _BASE_URL = "https://openrouter.ai/api/v1"
 
-    def __init__(self, api_key: str, timeout: int = 600, max_retries: int = 3):
+    def __init__(self, api_key: str, timeout: int = 600, max_retries: int = 3,
+                 proxy: Optional[str] = None):
         super().__init__(
             api_key=api_key,
             base_url=self._BASE_URL,
             timeout=timeout,
             max_retries=max_retries,
+            proxy=proxy,
             default_headers={
                 "HTTP-Referer": "https://github.com/cphos/AI_Question",
                 "X-Title": "CPhO Physics Generator",
@@ -50,14 +53,15 @@ class OpenRouterClient(OpenAICompatibleClient):
 
     @classmethod
     def from_settings(cls, *, api_key: str, base_url: str = "",
-                      timeout: int = 600, max_retries: int = 3) -> "OpenRouterClient":
+                      timeout: int = 600, max_retries: int = 3,
+                      proxy: Optional[str] = None) -> "OpenRouterClient":
         """从已解析的设置记录构造（``base_url`` 对 OpenRouter 固定，忽略入参）。"""
         if not api_key:
             raise ValueError(
                 "openrouter 服务商缺少 api_key。\n"
                 "  修复: 通过管理员 API 配置该服务商的 API Key。"
             )
-        return cls(api_key=api_key, timeout=timeout, max_retries=max_retries)
+        return cls(api_key=api_key, timeout=timeout, max_retries=max_retries, proxy=proxy)
 
 
 def query_openrouter_credits(api_key: str, timeout: int = 30) -> dict:

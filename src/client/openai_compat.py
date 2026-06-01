@@ -5,6 +5,9 @@ OpenRouter 客户端也继承自此类。
 """
 from __future__ import annotations
 
+from typing import Optional
+
+import httpx
 from openai import OpenAI
 
 from client.base import BaseLLMClient, UsageInfo, register_provider
@@ -17,12 +20,17 @@ class OpenAICompatibleClient(BaseLLMClient):
     provider_name = "openai_compatible"
 
     def __init__(self, api_key: str, base_url: str,
-                 timeout: int = 600, max_retries: int = 3, **client_kwargs):
+                 timeout: int = 600, max_retries: int = 3,
+                 proxy: Optional[str] = None, **client_kwargs):
+        http_client: Optional[httpx.Client] = None
+        if proxy:
+            http_client = httpx.Client(proxy=proxy)
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
             max_retries=max_retries,
+            http_client=http_client,
             **client_kwargs,
         )
 
@@ -47,7 +55,8 @@ class OpenAICompatibleClient(BaseLLMClient):
 
     @classmethod
     def from_settings(cls, *, api_key: str, base_url: str,
-                      timeout: int = 600, max_retries: int = 3) -> "OpenAICompatibleClient":
+                      timeout: int = 600, max_retries: int = 3,
+                      proxy: Optional[str] = None) -> "OpenAICompatibleClient":
         """从已解析的设置记录构造（供 :mod:`config.runtime` 使用）。"""
         if not api_key or not base_url:
             raise ValueError(
@@ -55,7 +64,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                 "  修复: 通过管理员 API 配置该服务商的凭据。"
             )
         return cls(api_key=api_key, base_url=base_url,
-                   timeout=timeout, max_retries=max_retries)
+                   timeout=timeout, max_retries=max_retries, proxy=proxy)
 
     def stream_chat(self, **kwargs) -> tuple[str, UsageInfo]:
         """流式聊天请求，返回 (完整文本, UsageInfo)。

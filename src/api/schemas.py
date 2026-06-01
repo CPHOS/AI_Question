@@ -338,6 +338,9 @@ class ProviderCreate(BaseModel):
     base_url: str = Field(
         default="", description="API Base URL（openai_compatible 必填；openrouter 可留空）。"
     )
+    proxy: str = Field(
+        default="", description="HTTP(S) 代理地址，如 http://mihomo:7890。留空表示直连。"
+    )
     timeout: int = Field(default=600, ge=1, description="请求超时（秒）。")
     max_retries: int = Field(default=3, ge=0, description="SDK 自动重试次数。")
 
@@ -349,6 +352,7 @@ class ProviderUpdate(BaseModel):
     kind: Optional[str] = None
     api_key: Optional[str] = Field(default=None, description="新 API Key；留空表示不修改。")
     base_url: Optional[str] = None
+    proxy: Optional[str] = Field(default=None, description="HTTP(S) 代理地址；留空表示不修改。")
     timeout: Optional[int] = Field(default=None, ge=1)
     max_retries: Optional[int] = Field(default=None, ge=0)
 
@@ -360,6 +364,7 @@ class ProviderInfo(BaseModel):
     name: str
     kind: str
     base_url: str = ""
+    proxy: str = ""
     timeout: int = 600
     max_retries: int = 3
     api_key_set: bool = Field(description="是否已配置 API Key。")

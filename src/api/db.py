@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
     kind        TEXT NOT NULL,
     api_key     TEXT NOT NULL DEFAULT '',
     base_url    TEXT NOT NULL DEFAULT '',
+    proxy       TEXT NOT NULL DEFAULT '',
     timeout     INTEGER NOT NULL DEFAULT 600,
     max_retries INTEGER NOT NULL DEFAULT 3,
     created_at  TEXT NOT NULL,
@@ -133,6 +134,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE task_events ADD COLUMN occurrence_id TEXT NOT NULL DEFAULT ''")
     if "round" not in event_cols:
         conn.execute("ALTER TABLE task_events ADD COLUMN round INTEGER NOT NULL DEFAULT 1")
+
+    prov_cols = {row["name"] for row in conn.execute("PRAGMA table_info(llm_providers)").fetchall()}
+    if "proxy" not in prov_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN proxy TEXT NOT NULL DEFAULT ''")
 
 
 def configure(db_path: Path) -> None:

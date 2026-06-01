@@ -57,4 +57,14 @@ services:
       # - ./deploy/nginx/certs:/etc/nginx/certs:ro
     restart: unless-stopped
 
+  # --- HTTP 代理（mihomo / Clash.Meta）---
+  # 为 LLM API 请求提供可选的 HTTP 代理通道。
+  # 在管理面板 → 服务商 → HTTP 代理 填写 http://mihomo:7890 即可启用。
+  mihomo:
+    image: metacubex/mihomo:latest
+    container_name: cphos-mihomo
+    volumes:
+      - ./proxy-config.yaml:/root/.config/mihomo/config.yaml:ro
+    restart: unless-stopped
+
 # 默认 bridge 网络下，nginx 通过服务名 `api` 解析到后端容器。

@@ -34,6 +34,7 @@ class ResolvedModel:
     provider_kind: str
     api_key: str
     base_url: str
+    proxy: str
     timeout: int
     max_retries: int
     model: str
@@ -93,7 +94,7 @@ def build_client(role: str) -> tuple[Any, ResolvedModel]:
     m = resolve_model(role)
     client = build_client_from_settings(
         provider_kind=m.provider_kind, api_key=m.api_key, base_url=m.base_url,
-        timeout=m.timeout, max_retries=m.max_retries,
+        proxy=m.proxy, timeout=m.timeout, max_retries=m.max_retries,
     )
     return client, m
 
