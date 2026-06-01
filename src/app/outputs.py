@@ -256,8 +256,12 @@ class LocalCompiler:
         *,
         assets: tuple[str, ...] = (),
         template_dir: str = "",
+        use_cphos_templates: bool = False,
         timeout: int | None = None,
     ) -> dict[str, StepResult]:
+        # 本机后端：CPHOS 模板来自本地 ``template_dir``（经 TEXINPUTS 注入）。
+        # ``use_cphos_templates`` 仅对 remote 后端有意义，本机后端按 ``template_dir``
+        # 是否可用决定，故此处忽略该参数。
         # 本机后端的资产（assets）已在磁盘上，无需额外处理。
         results: dict[str, StepResult] = {}
         for step in steps:
@@ -297,6 +301,7 @@ class RemoteCompiler:
         *,
         assets: tuple[str, ...] = (),
         template_dir: str = "",
+        use_cphos_templates: bool = False,
         timeout: int | None = None,
     ) -> dict[str, StepResult]:
         from client.latex_service import (
@@ -311,8 +316,12 @@ class RemoteCompiler:
                 for s in steps
             }
 
-        # 服务镜像预装 CPHOS 模板：template_dir 非空 → 最终文档，启用模板搜索路径。
-        use_cphos_templates = bool(template_dir)
+        # CPHOS 模板预装在服务端镜像里，是否启用由调用方按「最终文档(需要) / standalone
+        # 图片(不需要)」显式决定（``use_cphos_templates``），**与本地是否存在模板目录无关**。
+        # 注意：不能用 ``bool(template_dir)`` 推断——容器化部署下本地模板目录通常不挂载，
+        # 会被误判为 False，导致服务端不加搜索路径而报 ``cphos.cls not found``。
+        # 为兼容显式传入本地模板路径的调用，两者取「或」。
+        use_cphos_templates = use_cphos_templates or bool(template_dir)
 
         try:
             with LatexServiceClient(
@@ -496,6 +505,9 @@ def _compile_final_document(
         [BuildStep(id="final", root=final_tex.name, passes=2)],
         assets=fig_assets,
         template_dir=template_dir,
+        # 最终文档恒需 CPHOS 模板：remote 后端据此让服务端加入预装模板搜索路径，
+        # 不依赖本地 template_dir 是否存在（容器化部署常不挂载本地模板目录）。
+        use_cphos_templates=True,
     )
     result = results["final"]
     status = {"ok": result.ok, "detail": result.log_tail, "template_dir": template_dir}

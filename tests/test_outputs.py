@@ -285,8 +285,9 @@ def test_remote_backend_never_calls_subprocess(tmp_path, monkeypatch):
 
     captured = {}
 
-    def _fake_compile_many(self, workspace, steps, *, assets=(), template_dir="", timeout=None):
+    def _fake_compile_many(self, workspace, steps, *, assets=(), template_dir="", use_cphos_templates=False, timeout=None):
         captured.setdefault("steps", []).extend(s.id for s in steps)
+        captured.setdefault("use_cphos", {}).update({s.id: use_cphos_templates for s in steps})
         return {s.id: __import__("app.outputs", fromlist=["StepResult"]).StepResult(s.id, False, "stub") for s in steps}
 
     monkeypatch.setattr("app.outputs.RemoteCompiler.compile_many", _fake_compile_many)
@@ -302,6 +303,10 @@ def test_remote_backend_never_calls_subprocess(tmp_path, monkeypatch):
 
     assert "fig_1" in captured["steps"]
     assert "final" in captured["steps"]
+    # 回归保护：最终文档必须显式要求 CPHOS 模板（不依赖本地模板目录是否存在），
+    # 否则 remote 后端会报 cphos.cls not found；standalone 图片则不需要。
+    assert captured["use_cphos"]["final"] is True
+    assert captured["use_cphos"]["fig_1"] is False
 
 
 def test_recompile_outputs_missing_final_raises(tmp_path):
